@@ -17,7 +17,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
-from models.schemas import Agenda, SummaryResponse
+from models.schemas import Agenda, Minutes, SummaryResponse
 
 # --- Load .env file if present (fallback for HF Spaces when secrets aren't working) ---
 
