@@ -1,8 +1,0 @@
-# Vercel Python runtime requirements
-# These are installed when the api/index.py serverless function is built
-fastapi>=0.110.0
-uvicorn[standard]>=0.27.0
-openai>=1.12.0
-cryptography>=41.0.0
-httpx>=0.27.0
-mangum>=0.17.0

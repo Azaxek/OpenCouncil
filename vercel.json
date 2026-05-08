@@ -3,15 +3,9 @@
     {
       "src": "frontend/package.json",
       "use": "@vercel/next"
-    },
-    {
-      "src": "api/index.py",
-      "use": "@vercel/python"
     }
   ],
   "routes": [
-    { "src": "/health", "dest": "api/index.py" },
-    { "src": "/api/(.*)", "dest": "api/index.py" },
     { "handle": "filesystem" },
     { "src": "/(.*)", "dest": "frontend/$1" }
   ]
