@@ -6,15 +6,7 @@
     },
     {
       "src": "api/index.py",
-      "use": "@vercel/python",
-      "config": {
-        "functions": {
-          "api/index.py": {
-            "runtime": "python3.12@latest",
-            "maxDuration": 30
-          }
-        }
-      }
+      "use": "@vercel/python"
     }
   ],
   "routes": [
