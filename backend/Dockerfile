@@ -18,8 +18,8 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy the entire backend directory
 COPY . .
 
-# Expose the port HF Spaces will route to
-EXPOSE 8000
+# HF Spaces routes traffic to port 7860 by default
+EXPOSE 7860
 
-# Start the FastAPI server
-CMD ["uvicorn", "api.server:app", "--host", "0.0.0.0", "--port", "8000"]
+# Start the FastAPI server on the HF Spaces expected port
+CMD ["uvicorn", "api.server:app", "--host", "0.0.0.0", "--port", "7860"]
