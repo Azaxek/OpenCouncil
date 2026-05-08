@@ -2,7 +2,10 @@
 .env
 
 # SQLite database (contains cached agenda data)
-data/
+# Keep cities.json tracked (it's config, not runtime data)
+data/civic_city_hub.db
+data/civic_city_hub.db-wal
+data/civic_city_hub.db-shm
 
 # Python cache
 __pycache__/

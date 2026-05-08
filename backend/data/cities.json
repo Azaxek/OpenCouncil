@@ -1,0 +1,22 @@
+{
+  "description": "City database for Civic City Hub. Each city has a connector config and optional IP range hints for geolocation.",
+  "default_city": "paris-tx",
+  "cities": [
+    {
+      "id": "paris-tx",
+      "name": "Paris",
+      "state": "TX",
+      "full_name": "Paris, Texas",
+      "timezone": "America/Chicago",
+      "website_url": "https://www.paristexas.gov",
+      "agenda_center_url": "https://www.paristexas.gov/AgendaCenter",
+      "connector_type": "laserfiche",
+      "laserfiche_url": "https://documents.paristexas.gov/weblink",
+      "population": 25000,
+      "county": "Lamar County",
+      "description": "A city in Northeast Texas known as the 'Second Star of Texas'",
+      "tags": ["rural", "small-city", "texas"],
+      "active": true
+    }
+  ]
+}

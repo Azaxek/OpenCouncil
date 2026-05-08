@@ -3,12 +3,11 @@ Persistent SQLite storage for Civic City Hub.
 
 Stores agendas and summaries in a local SQLite database.
 Zero infrastructure cost — just a file on disk.
-Works everywhere: local dev, Vercel, Railway, Render, etc.
 
-For Vercel free tier: SQLite works in serverless functions
-(read-only on ephemeral filesystem, but fine for caching).
-For true persistence on Vercel free tier, upgrade to Vercel Postgres
-or Vercel KV (both have generous free tiers).
+On Vercel (serverless), the filesystem is ephemeral and read-only
+except for /tmp. We detect Vercel via the VERCEL env var and use
+/tmp for the database. Note: data is ephemeral on Vercel free tier
+(per-instance), but fine for caching/read-heavy workloads.
 """
 
 import json
@@ -20,8 +19,11 @@ from typing import Optional
 
 from models.schemas import Agenda, SummaryResponse
 
-# Database path — stored alongside the backend code
-DB_DIR = Path(__file__).parent / "data"
+# On Vercel, use /tmp (writable); locally, use the data/ directory
+if os.getenv("VERCEL"):
+    DB_DIR = Path("/tmp/civic_city_hub_data")
+else:
+    DB_DIR = Path(__file__).parent / "data"
 DB_PATH = DB_DIR / "civic_city_hub.db"
 
 
