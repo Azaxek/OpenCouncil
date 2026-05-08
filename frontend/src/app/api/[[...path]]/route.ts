@@ -1,8 +1,8 @@
 /**
- * Next.js API Route Handler — proxy to the Python backend on Railway.
+ * Next.js API Route Handler — proxy to the Python backend on HF Spaces.
  *
  * Local dev: Proxies to localhost:8000 (Python backend).
- * Vercel: Proxies to Railway backend URL (set via NEXT_PUBLIC_API_URL env var).
+ * Vercel: Proxies to HF Spaces backend URL (set via NEXT_PUBLIC_API_URL env var).
  *
  * This eliminates the need for Python on Vercel entirely.
  */

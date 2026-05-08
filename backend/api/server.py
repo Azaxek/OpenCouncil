@@ -8,7 +8,7 @@ Provides REST endpoints for:
 - IP-based city detection for the frontend
 - Health check
 
-Summaries are stored in SQLite for zero-cost persistence.
+Summaries are stored in SQLite (local dev) or PostgreSQL (HF Spaces via Supabase).
 API keys support encrypted storage for safe GitHub commits.
 """
 
@@ -129,9 +129,9 @@ async def lifespan(app: FastAPI):
     """Manage application lifecycle."""
     global connector, summarizer
 
-    # Initialize database
+    # Initialize database (SQLite locally, PostgreSQL on HF Spaces)
     init_db()
-    print("[OK] SQLite database initialized")
+    print(f"[OK] Database initialized ({'PostgreSQL' if os.getenv('DATABASE_URL') else 'SQLite'})")
 
     # Initialize Laserfiche connector for Paris, TX
     connector = LaserficheConnector(
