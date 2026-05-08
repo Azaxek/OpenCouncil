@@ -5,13 +5,21 @@
       "use": "@vercel/next"
     },
     {
-      "src": "backend/api/**/*.py",
-      "use": "@vercel/python"
+      "src": "api/index.py",
+      "use": "@vercel/python",
+      "config": {
+        "functions": {
+          "api/index.py": {
+            "runtime": "python3.12@latest",
+            "maxDuration": 30
+          }
+        }
+      }
     }
   ],
   "routes": [
-    { "src": "/health", "dest": "backend/api/index.py" },
-    { "src": "/api/(.*)", "dest": "backend/api/index.py" },
+    { "src": "/health", "dest": "api/index.py" },
+    { "src": "/api/(.*)", "dest": "api/index.py" },
     { "handle": "filesystem" },
     { "src": "/(.*)", "dest": "frontend/$1" }
   ]
