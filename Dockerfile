@@ -1,4 +1,4 @@
-# HF Spaces root Dockerfile — delegates to backend/Dockerfile
+# HF Spaces root Dockerfile
 FROM python:3.12-slim
 
 WORKDIR /app
@@ -13,11 +13,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY backend/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy the entire repo (needed for backend code)
+# Copy the entire repo
 COPY . .
+
+# The Python imports (from connectors., from models., etc.) expect to run from backend/
+WORKDIR /app/backend
 
 # HF Spaces routes traffic to port 7860 by default
 EXPOSE 7860
 
 # Start the FastAPI server
-CMD ["uvicorn", "backend.api.server:app", "--host", "0.0.0.0", "--port", "7860"]
+CMD ["uvicorn", "api.server:app", "--host", "0.0.0.0", "--port", "7860"]
