@@ -26,10 +26,35 @@ USE_POSTGRES = bool(os.getenv("DATABASE_URL"))
 if USE_POSTGRES:
     import psycopg2
     import psycopg2.extras
+    from urllib.parse import urlparse, unquote
 
     def _get_pg_conn():
-        """Get a PostgreSQL connection."""
-        conn = psycopg2.connect(os.environ["DATABASE_URL"])
+        """Get a PostgreSQL connection.
+
+        Parses DATABASE_URL manually to handle special characters in passwords
+        (e.g. Supabase Transaction Pooler connection strings with `]`, `@`, etc.).
+        """
+        raw_url = os.environ["DATABASE_URL"]
+        parsed = urlparse(raw_url)
+
+        # Build kwargs from parsed URL — this avoids psycopg2's own URL parser
+        # which can choke on special characters in the password.
+        kwargs = {
+            "host": parsed.hostname,
+            "port": parsed.port or 6543,
+            "dbname": parsed.path.lstrip("/"),
+            "user": parsed.username,
+            "password": unquote(parsed.password) if parsed.password else "",
+        }
+
+        # Handle SSL mode from query params if present (e.g. ?sslmode=require)
+        if parsed.query:
+            qs = dict(q.split("=", 1) for q in parsed.query.split("&") if "=" in q)
+            sslmode = qs.get("sslmode")
+            if sslmode:
+                kwargs["sslmode"] = sslmode
+
+        conn = psycopg2.connect(**kwargs)
         conn.autocommit = False
         return conn
 else:
