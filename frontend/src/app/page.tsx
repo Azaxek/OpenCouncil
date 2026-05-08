@@ -36,9 +36,11 @@ interface DetectCityResponse {
   all_cities: CityInfo[];
 }
 
-// Use relative URLs — Next.js rewrites /api/* to the backend in dev,
-// and Vercel experimental services handle routing in production.
-const API_BASE = "";
+// API base URL:
+// - In local dev: empty string (Next.js rewrites /api/* → localhost:8000)
+// - On Vercel: "/_/backend" (experimental services route to backend)
+// Override via NEXT_PUBLIC_API_URL env var if needed
+const API_BASE = process.env.NEXT_PUBLIC_API_URL || "";
 
 export default function HomePage() {
   const [health, setHealth] = useState<HealthResponse | null>(null);

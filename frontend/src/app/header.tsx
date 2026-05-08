@@ -63,9 +63,11 @@ export function Header() {
 
   // --- City Detection ---
   useEffect(() => {
-    // Use relative URLs — Next.js rewrites /api/* to the backend in dev,
-    // and Vercel experimental services handle routing in production.
-    fetch(`/api/detect-city`)
+    // API base URL:
+    // - Local dev: empty string (Next.js rewrites /api/* → localhost:8000)
+    // - Vercel: "/_/backend" (experimental services route to backend)
+    const API_BASE = process.env.NEXT_PUBLIC_API_URL || "";
+    fetch(`${API_BASE}/api/detect-city`)
       .then((res) => res.json())
       .then((data: DetectCityResponse) => {
         setCity(data.city);
