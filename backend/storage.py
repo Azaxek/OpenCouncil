@@ -457,21 +457,31 @@ def _row_to_agenda(row, items_rows) -> Agenda:
             vote_result=ir["vote_result"],
         ))
 
+    def _ensure_tz(dt: datetime) -> datetime:
+        """Make a datetime timezone-aware (UTC) if it's naive."""
+        if dt is not None and dt.tzinfo is None:
+            return dt.replace(tzinfo=timezone.utc)
+        return dt
+
     try:
         meeting_date = row["meeting_date"]
         if isinstance(meeting_date, str):
-            meeting_date = datetime.fromisoformat(meeting_date)
+            meeting_date = _ensure_tz(datetime.fromisoformat(meeting_date))
         elif meeting_date is None:
             meeting_date = datetime.now(timezone.utc)
+        else:
+            meeting_date = _ensure_tz(meeting_date)
     except (ValueError, TypeError):
         meeting_date = datetime.now(timezone.utc)
 
     try:
         ingested_at = row["ingested_at"]
         if isinstance(ingested_at, str):
-            ingested_at = datetime.fromisoformat(ingested_at)
+            ingested_at = _ensure_tz(datetime.fromisoformat(ingested_at))
         elif ingested_at is None:
             ingested_at = datetime.now(timezone.utc)
+        else:
+            ingested_at = _ensure_tz(ingested_at)
     except (ValueError, TypeError):
         ingested_at = datetime.now(timezone.utc)
 
@@ -662,12 +672,20 @@ def _row_to_summary(row) -> SummaryResponse:
         except (TypeError, json.JSONDecodeError):
             return default
 
+    def _ensure_tz(dt: datetime) -> datetime:
+        """Make a datetime timezone-aware (UTC) if it's naive."""
+        if dt is not None and dt.tzinfo is None:
+            return dt.replace(tzinfo=timezone.utc)
+        return dt
+
     try:
         meeting_date = row["meeting_date"]
         if isinstance(meeting_date, str):
-            meeting_date = datetime.fromisoformat(meeting_date)
+            meeting_date = _ensure_tz(datetime.fromisoformat(meeting_date))
         elif meeting_date is None:
             meeting_date = datetime.now(timezone.utc)
+        else:
+            meeting_date = _ensure_tz(meeting_date)
     except (ValueError, TypeError):
         meeting_date = datetime.now(timezone.utc)
 
@@ -852,6 +870,11 @@ def get_minutes(minutes_id: str) -> Optional[Minutes]:
 
 def _get_minutes_sqlite(minutes_id: str) -> Optional[Minutes]:
     """Get minutes from SQLite."""
+    def _ensure_tz(dt: datetime) -> datetime:
+        if dt is not None and dt.tzinfo is None:
+            return dt.replace(tzinfo=timezone.utc)
+        return dt
+
     conn = sqlite3.connect(str(DB_PATH))
     try:
         conn.row_factory = sqlite3.Row
@@ -864,7 +887,7 @@ def _get_minutes_sqlite(minutes_id: str) -> Optional[Minutes]:
             id=row["id"],
             city=row["city"],
             state=row["state"],
-            meeting_date=datetime.fromisoformat(row["meeting_date"]),
+            meeting_date=_ensure_tz(datetime.fromisoformat(row["meeting_date"])),
             meeting_type=row["meeting_type"],
             title=row["title"],
             url=row["url"],
@@ -879,6 +902,11 @@ def _get_minutes_sqlite(minutes_id: str) -> Optional[Minutes]:
 
 def _get_minutes_pg(minutes_id: str) -> Optional[Minutes]:
     """Get minutes from PostgreSQL."""
+    def _ensure_tz(dt: datetime) -> datetime:
+        if dt is not None and dt.tzinfo is None:
+            return dt.replace(tzinfo=timezone.utc)
+        return dt
+
     conn = _get_pg_conn()
     try:
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
@@ -888,11 +916,16 @@ def _get_minutes_pg(minutes_id: str) -> Optional[Minutes]:
             row = cur.fetchone()
             if not row:
                 return None
+            meeting_date = row["meeting_date"]
+            if isinstance(meeting_date, str):
+                meeting_date = _ensure_tz(datetime.fromisoformat(meeting_date))
+            else:
+                meeting_date = _ensure_tz(meeting_date)
             return Minutes(
                 id=row["id"],
                 city=row["city"],
                 state=row["state"],
-                meeting_date=datetime.fromisoformat(row["meeting_date"]) if isinstance(row["meeting_date"], str) else row["meeting_date"],
+                meeting_date=meeting_date,
                 meeting_type=row["meeting_type"],
                 title=row["title"],
                 url=row["url"],
@@ -1049,6 +1082,11 @@ def get_minutes_summary(minutes_id: str) -> Optional[SummaryResponse]:
 
 def _get_minutes_summary_sqlite(minutes_id: str) -> Optional[SummaryResponse]:
     """Get minutes summary from SQLite."""
+    def _ensure_tz(dt: datetime) -> datetime:
+        if dt is not None and dt.tzinfo is None:
+            return dt.replace(tzinfo=timezone.utc)
+        return dt
+
     conn = sqlite3.connect(str(DB_PATH))
     try:
         conn.row_factory = sqlite3.Row
@@ -1059,7 +1097,7 @@ def _get_minutes_summary_sqlite(minutes_id: str) -> Optional[SummaryResponse]:
             return None
         return SummaryResponse(
             agenda_id=row["minutes_id"],
-            meeting_date=datetime.fromisoformat(row["meeting_date"]),
+            meeting_date=_ensure_tz(datetime.fromisoformat(row["meeting_date"])),
             meeting_type=row["meeting_type"],
             summary=row["summary"],
             key_decisions=json.loads(row["key_decisions"]),
@@ -1073,6 +1111,11 @@ def _get_minutes_summary_sqlite(minutes_id: str) -> Optional[SummaryResponse]:
 
 def _get_minutes_summary_pg(minutes_id: str) -> Optional[SummaryResponse]:
     """Get minutes summary from PostgreSQL."""
+    def _ensure_tz(dt: datetime) -> datetime:
+        if dt is not None and dt.tzinfo is None:
+            return dt.replace(tzinfo=timezone.utc)
+        return dt
+
     conn = _get_pg_conn()
     try:
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
@@ -1082,9 +1125,14 @@ def _get_minutes_summary_pg(minutes_id: str) -> Optional[SummaryResponse]:
             row = cur.fetchone()
             if not row:
                 return None
+            meeting_date = row["meeting_date"]
+            if isinstance(meeting_date, str):
+                meeting_date = _ensure_tz(datetime.fromisoformat(meeting_date))
+            else:
+                meeting_date = _ensure_tz(meeting_date)
             return SummaryResponse(
                 agenda_id=row["minutes_id"],
-                meeting_date=datetime.fromisoformat(row["meeting_date"]) if isinstance(row["meeting_date"], str) else row["meeting_date"],
+                meeting_date=meeting_date,
                 meeting_type=row["meeting_type"],
                 summary=row["summary"],
                 key_decisions=json.loads(row["key_decisions"]),

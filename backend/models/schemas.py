@@ -1,6 +1,6 @@
 """Core data models for Civic City Hub."""
 
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 from pydantic import BaseModel, Field
 
@@ -33,7 +33,7 @@ class Agenda(BaseModel):
     raw_text: Optional[str] = None
     summary: Optional[str] = None
     source: str = "civicplus"  # connector type used
-    ingested_at: datetime = Field(default_factory=datetime.utcnow)
+    ingested_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 
 class Minutes(BaseModel):
@@ -49,7 +49,7 @@ class Minutes(BaseModel):
     raw_text: Optional[str] = None
     summary: Optional[str] = None
     source: str = "laserfiche"
-    ingested_at: datetime = Field(default_factory=datetime.utcnow)
+    ingested_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 
 class CityConfig(BaseModel):
