@@ -16,9 +16,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy the entire repo (including backend/.env if present — it's gitignored)
 COPY . .
 
-# If a backend/.env file exists, source it into the environment
-RUN if [ -f backend/.env ]; then set -a; . backend/.env; set +a; fi || true
-
+# The .env file is loaded at runtime by storage.py (backend/.env)
 # The Python imports (from connectors., from models., etc.) expect to run from backend/
 WORKDIR /app/backend
 
