@@ -254,11 +254,15 @@ async def list_agendas(limit: int = Query(10, ge=1, le=50)):
 @app.get("/api/agendas/{agenda_id}")
 async def get_agenda(agenda_id: str):
     """Get a specific agenda with full details and its summary if available."""
-    # Check persistent storage first
-    agenda = get_agenda(agenda_id)
-    if agenda:
-        summary = get_summary(agenda_id)
-        return {"agenda": agenda, "summary": summary}
+    try:
+        # Check persistent storage first
+        agenda = get_agenda(agenda_id)
+        if agenda:
+            summary = get_summary(agenda_id)
+            return {"agenda": agenda, "summary": summary}
+    except Exception as e:
+        print(f"[ERROR] DB lookup failed for agenda {agenda_id}: {type(e).__name__}: {e}")
+        # Fall through to fetch fresh
 
     # Otherwise fetch fresh
     if not connector:

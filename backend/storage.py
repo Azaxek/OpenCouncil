@@ -13,7 +13,7 @@ Switch via DATABASE_URL env var:
 import json
 import os
 import sqlite3
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -441,23 +441,45 @@ def _row_to_agenda(row, items_rows) -> Agenda:
 
     items = []
     for ir in items_rows:
+        try:
+            attachments = json.loads(ir["attachments"]) if ir.get("attachments") else []
+        except (TypeError, json.JSONDecodeError):
+            attachments = []
         items.append(AgendaItem(
             title=ir["title"],
             description=ir["description"],
             category=ir["category"],
             department=ir["department"],
             staff_contact=ir["staff_contact"],
-            attachments=json.loads(ir["attachments"]) if ir.get("attachments") else [],
+            attachments=attachments,
             plain_language_summary=ir["plain_language_summary"],
             budget_impact=ir["budget_impact"],
             vote_result=ir["vote_result"],
         ))
 
+    try:
+        meeting_date = row["meeting_date"]
+        if isinstance(meeting_date, str):
+            meeting_date = datetime.fromisoformat(meeting_date)
+        elif meeting_date is None:
+            meeting_date = datetime.now(timezone.utc)
+    except (ValueError, TypeError):
+        meeting_date = datetime.now(timezone.utc)
+
+    try:
+        ingested_at = row["ingested_at"]
+        if isinstance(ingested_at, str):
+            ingested_at = datetime.fromisoformat(ingested_at)
+        elif ingested_at is None:
+            ingested_at = datetime.now(timezone.utc)
+    except (ValueError, TypeError):
+        ingested_at = datetime.now(timezone.utc)
+
     return Agenda(
         id=row["id"],
         city=row["city"],
         state=row["state"],
-        meeting_date=datetime.fromisoformat(row["meeting_date"]) if isinstance(row["meeting_date"], str) else row["meeting_date"],
+        meeting_date=meeting_date,
         meeting_type=row["meeting_type"],
         title=row["title"],
         url=row["url"],
@@ -466,7 +488,7 @@ def _row_to_agenda(row, items_rows) -> Agenda:
         raw_text=row["raw_text"],
         summary=row["summary"],
         source=row["source"],
-        ingested_at=datetime.fromisoformat(row["ingested_at"]) if isinstance(row["ingested_at"], str) else row["ingested_at"],
+        ingested_at=ingested_at,
         items=items,
     )
 
@@ -630,15 +652,34 @@ def _get_summary_pg(agenda_id: str) -> Optional[SummaryResponse]:
 
 def _row_to_summary(row) -> SummaryResponse:
     """Convert a database row to a SummaryResponse model."""
+    def _safe_json_loads(val, default=None):
+        if default is None:
+            default = []
+        if val is None:
+            return default
+        try:
+            return json.loads(val)
+        except (TypeError, json.JSONDecodeError):
+            return default
+
+    try:
+        meeting_date = row["meeting_date"]
+        if isinstance(meeting_date, str):
+            meeting_date = datetime.fromisoformat(meeting_date)
+        elif meeting_date is None:
+            meeting_date = datetime.now(timezone.utc)
+    except (ValueError, TypeError):
+        meeting_date = datetime.now(timezone.utc)
+
     return SummaryResponse(
         agenda_id=row["agenda_id"],
-        meeting_date=datetime.fromisoformat(row["meeting_date"]) if isinstance(row["meeting_date"], str) else row["meeting_date"],
+        meeting_date=meeting_date,
         meeting_type=row["meeting_type"],
-        summary=row["summary"],
-        key_decisions=json.loads(row["key_decisions"]),
-        budget_items=json.loads(row["budget_items"]),
-        public_comment_opportunities=json.loads(row["public_comment_opportunities"]),
-        items=json.loads(row["items"]),
+        summary=row["summary"] or "",
+        key_decisions=_safe_json_loads(row.get("key_decisions")),
+        budget_items=_safe_json_loads(row.get("budget_items")),
+        public_comment_opportunities=_safe_json_loads(row.get("public_comment_opportunities")),
+        items=_safe_json_loads(row.get("items")),
     )
 
 
