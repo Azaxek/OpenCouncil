@@ -34,6 +34,7 @@ from storage import (
     get_summary,
     list_summaries as db_list_summaries,
     summary_exists,
+    USE_POSTGRES,
 )
 
 
@@ -195,7 +196,7 @@ async def health():
         "city": f"{PARIS_TX_CONFIG.name}, {PARIS_TX_CONFIG.state}",
         "llm_available": summarizer is not None,
         "llm_provider": "deepseek",
-        "storage": "sqlite",
+        "storage": "postgresql" if USE_POSTGRES else "sqlite",
     }
 
 
