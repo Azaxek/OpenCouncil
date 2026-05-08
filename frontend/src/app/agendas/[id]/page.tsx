@@ -53,10 +53,12 @@ interface SummaryData {
   }>;
 }
 
-// API base URL:
-// - Local dev: empty string (Next.js rewrites /api/* → localhost:8000)
-// - Vercel: "/_/backend" (experimental services route to backend)
-const API_BASE = process.env.NEXT_PUBLIC_API_URL || "";
+// Auto-detect API base URL:
+// - Local dev (localhost): empty string → Next.js rewrites /api/* to backend
+// - Vercel: "/_/backend" → experimental services route to backend
+const API_BASE = typeof window !== "undefined" && window.location.hostname !== "localhost"
+  ? "/_/backend"
+  : "";
 
 export default function AgendaDetailPage({
   params,

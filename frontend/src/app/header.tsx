@@ -63,10 +63,10 @@ export function Header() {
 
   // --- City Detection ---
   useEffect(() => {
-    // API base URL:
-    // - Local dev: empty string (Next.js rewrites /api/* → localhost:8000)
-    // - Vercel: "/_/backend" (experimental services route to backend)
-    const API_BASE = process.env.NEXT_PUBLIC_API_URL || "";
+    // Auto-detect API base URL:
+    // - Local dev (localhost): empty string → Next.js rewrites /api/* to backend
+    // - Vercel: "/_/backend" → experimental services route to backend
+    const API_BASE = window.location.hostname !== "localhost" ? "/_/backend" : "";
     fetch(`${API_BASE}/api/detect-city`)
       .then((res) => res.json())
       .then((data: DetectCityResponse) => {
