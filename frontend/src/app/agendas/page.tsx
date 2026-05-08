@@ -22,12 +22,10 @@ interface CityInfo {
   full_name?: string;
 }
 
-// Auto-detect API base URL:
-// - Local dev (localhost): empty string → Next.js rewrites /api/* to backend
-// - Vercel: "/_/backend" → experimental services route to backend
-const API_BASE = typeof window !== "undefined" && window.location.hostname !== "localhost"
-  ? "/_/backend"
-  : "";
+// API base URL — always empty string.
+// Local dev: Next.js rewrites in next.config.ts proxy /api/* to localhost:8000
+// Vercel: vercel.json routes /api/* to the Python serverless function
+const API_BASE = "";
 
 export default function AgendasPage() {
   const [agendas, setAgendas] = useState<AgendaListItem[]>([]);

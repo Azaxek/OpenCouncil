@@ -2,10 +2,9 @@
   "buildCommand": "pip install -r requirements.txt",
   "outputDirectory": ".",
   "functions": {
-    "api/index.py": {
+    "api/**/*.py": {
       "runtime": "python3.12@latest",
-      "maxDuration": 30,
-      "includeFiles": "data/**"
+      "maxDuration": 30
     }
   }
 }

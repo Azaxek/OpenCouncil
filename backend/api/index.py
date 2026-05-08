@@ -4,10 +4,7 @@ Vercel serverless entry point for Civic City Hub backend.
 Vercel Python serverless functions use WSGI. FastAPI is ASGI, so we use
 Mangum — an ASGI-to-WSGI adapter — to bridge the gap.
 
-Key points:
-- Mangum wraps the FastAPI ASGI app into a WSGI callable
-- Vercel looks for `app` (WSGI) or `handler` (WSGI) in api/index.py
-- We set the VERCEL=1 env var so storage.py uses /tmp for SQLite
+Vercel looks for `app` (WSGI callable) in api/index.py.
 """
 
 import os

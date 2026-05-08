@@ -1,13 +1,18 @@
 {
-  "experimentalServices": {
-    "frontend": {
-      "entrypoint": "frontend",
-      "routePrefix": "/",
-      "framework": "nextjs"
+  "builds": [
+    {
+      "src": "frontend/package.json",
+      "use": "@vercel/next"
     },
-    "backend": {
-      "entrypoint": "backend",
-      "routePrefix": "/_/backend"
+    {
+      "src": "backend/api/**/*.py",
+      "use": "@vercel/python"
     }
-  }
+  ],
+  "routes": [
+    { "src": "/health", "dest": "backend/api/index.py" },
+    { "src": "/api/(.*)", "dest": "backend/api/index.py" },
+    { "handle": "filesystem" },
+    { "src": "/(.*)", "dest": "frontend/$1" }
+  ]
 }
