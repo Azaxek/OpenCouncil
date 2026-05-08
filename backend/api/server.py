@@ -259,9 +259,15 @@ async def get_agenda(agenda_id: str):
         agenda = get_agenda(agenda_id)
         if agenda:
             summary = get_summary(agenda_id)
-            return {"agenda": agenda, "summary": summary}
+            # Return as dict to avoid Pydantic serialization issues
+            return {
+                "agenda": agenda.model_dump(mode="json"),
+                "summary": summary.model_dump(mode="json") if summary else None,
+            }
     except Exception as e:
+        import traceback
         print(f"[ERROR] DB lookup failed for agenda {agenda_id}: {type(e).__name__}: {e}")
+        traceback.print_exc()
         # Fall through to fetch fresh
 
     # Otherwise fetch fresh
@@ -315,6 +321,8 @@ async def get_agenda(agenda_id: str):
     except HTTPException:
         raise
     except Exception as e:
+        import traceback
+        traceback.print_exc()
         print(f"[ERROR] Failed to fetch agenda {agenda_id}: {type(e).__name__}: {e}")
         raise HTTPException(status_code=502, detail=f"Failed to fetch agenda: {str(e)}")
 
