@@ -15,7 +15,7 @@ API keys support encrypted storage for safe GitHub commits.
 import json
 import os
 from contextlib import asynccontextmanager
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -283,11 +283,15 @@ async def get_agenda(agenda_id: str):
                     if a.get("document_url"):
                         raw_text = await connector.fetch_agenda_document_text(a["document_url"])
                         items = connector._parse_agenda_items_from_text(raw_text) if raw_text else []
+                        # Use timezone-aware datetime for meeting_date to avoid Pydantic validation issues
+                        meeting_date = a.get("meeting_date")
+                        if meeting_date is None:
+                            meeting_date = datetime.now(timezone.utc)
                         agenda = Agenda(
                             id=a["id"],
                             city=PARIS_TX_CONFIG.name,
                             state=PARIS_TX_CONFIG.state,
-                            meeting_date=a["meeting_date"] or __import__("datetime").datetime.utcnow(),
+                            meeting_date=meeting_date,
                             title=a["title"],
                             url=a["url"] or "",
                             pdf_url=a.get("document_url"),
@@ -307,6 +311,7 @@ async def get_agenda(agenda_id: str):
     except HTTPException:
         raise
     except Exception as e:
+        print(f"[ERROR] Failed to fetch agenda {agenda_id}: {type(e).__name__}: {e}")
         raise HTTPException(status_code=502, detail=f"Failed to fetch agenda: {str(e)}")
 
 

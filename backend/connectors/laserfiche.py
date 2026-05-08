@@ -23,6 +23,7 @@ The docview.aspx returns an HTML viewer page. For text extraction, use
 GPT-4o Vision on the viewer page or OCR on the rendered page images.
 """
 
+import hashlib
 import re
 import uuid
 from datetime import datetime, timezone
@@ -32,6 +33,16 @@ from xml.etree import ElementTree as ET
 import httpx
 
 from models.schemas import Agenda, AgendaItem, Minutes
+
+
+def _make_agenda_id(meeting_date: Optional[datetime], title: str) -> str:
+    """Generate a deterministic agenda ID from meeting date and title.
+    
+    This ensures the same agenda always gets the same ID, even across
+    repeated fetch_agenda_list() calls. Uses first 8 chars of SHA-256 hash.
+    """
+    key = f"{meeting_date.isoformat() if meeting_date else 'unknown'}|{title}"
+    return hashlib.sha256(key.encode()).hexdigest()[:8]
 
 # Laserfiche folder IDs for Paris, TX
 LASERFICHE_BASE = "https://documents.paristexas.gov/WebLink"
@@ -275,7 +286,7 @@ class LaserficheConnector:
                 display_title = f"City Council Meeting - {title}"
 
             agendas.append({
-                "id": str(uuid.uuid4())[:8],
+                "id": _make_agenda_id(meeting_date, display_title),
                 "title": display_title,
                 "meeting_date": meeting_date,
                 "url": document_url,
