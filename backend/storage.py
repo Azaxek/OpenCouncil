@@ -19,6 +19,20 @@ from typing import Optional
 
 from models.schemas import Agenda, SummaryResponse
 
+# --- Load .env file if present (fallback for HF Spaces when secrets aren't working) ---
+
+_env_file = Path(__file__).parent / ".env"
+if _env_file.exists():
+    with open(_env_file) as f:
+        for line in f:
+            line = line.strip()
+            if line and not line.startswith("#") and "=" in line:
+                key, _, val = line.partition("=")
+                key = key.strip()
+                val = val.strip().strip("\"'")
+                if key not in os.environ:  # Don't override existing env vars
+                    os.environ[key] = val
+
 # --- Backend Selection ---
 
 USE_POSTGRES = bool(os.getenv("DATABASE_URL"))
