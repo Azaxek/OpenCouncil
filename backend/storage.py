@@ -430,7 +430,14 @@ def _get_agenda_pg(agenda_id: str) -> Optional[Agenda]:
                 (agenda_id,),
             )
             items_rows = cur.fetchall()
-            return _row_to_agenda(row, items_rows)
+            try:
+                return _row_to_agenda(row, items_rows)
+            except Exception as e:
+                import traceback
+                print(f"[ERROR] _row_to_agenda failed for {agenda_id}: {type(e).__name__}: {e}")
+                traceback.print_exc()
+                # Return a minimal agenda dict instead of crashing
+                return None
     finally:
         conn.close()
 
@@ -655,7 +662,13 @@ def _get_summary_pg(agenda_id: str) -> Optional[SummaryResponse]:
             row = cur.fetchone()
             if not row:
                 return None
-            return _row_to_summary(row)
+            try:
+                return _row_to_summary(row)
+            except Exception as e:
+                import traceback
+                print(f"[ERROR] _row_to_summary failed for {agenda_id}: {type(e).__name__}: {e}")
+                traceback.print_exc()
+                return None
     finally:
         conn.close()
 
