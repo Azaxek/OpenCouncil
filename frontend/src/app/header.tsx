@@ -63,10 +63,9 @@ export function Header() {
 
   // --- City Detection ---
   useEffect(() => {
-    const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
-
-    // Try to detect city from IP
-    fetch(`${API_BASE}/api/detect-city`)
+    // Use relative URLs — Next.js rewrites /api/* to the backend in dev,
+    // and Vercel experimental services handle routing in production.
+    fetch(`/api/detect-city`)
       .then((res) => res.json())
       .then((data: DetectCityResponse) => {
         setCity(data.city);
