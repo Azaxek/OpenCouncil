@@ -15,6 +15,7 @@ API keys support encrypted storage for safe GitHub commits.
 import json
 import os
 from contextlib import asynccontextmanager
+from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
@@ -23,7 +24,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from connectors.laserfiche import LaserficheConnector
 from crypto_utils import get_api_key_from_env
-from models.schemas import Agenda, CityConfig, SummaryRequest, SummaryResponse
+from models.schemas import Agenda, CityConfig, Minutes, SummaryRequest, SummaryResponse
 from parsers.llm_summarizer import LLMSummarizer
 from storage import (
     init_db,
@@ -34,6 +35,12 @@ from storage import (
     get_summary,
     list_summaries as db_list_summaries,
     summary_exists,
+    save_minutes,
+    get_minutes,
+    list_minutes as db_list_minutes,
+    save_minutes_summary,
+    get_minutes_summary,
+    minutes_summary_exists,
     USE_POSTGRES,
 )
 
@@ -329,6 +336,181 @@ async def fetch_latest_agenda():
         raise
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"Failed to fetch latest agenda: {str(e)}")
+
+
+# --- Minutes (official records of what happened) ---
+
+
+async def _auto_summarize_minutes(minutes: Minutes) -> Optional[SummaryResponse]:
+    """Auto-summarize minutes and save persistently."""
+    global summarizer
+    if not summarizer or not minutes:
+        return None
+
+    # Check if already summarized
+    if minutes_summary_exists(minutes.id):
+        print(f"[AUTO] Summary already exists for minutes {minutes.id}, skipping.")
+        return get_minutes_summary(minutes.id)
+
+    try:
+        print(f"[AUTO] Summarizing minutes {minutes.id}...")
+        summary = await summarizer.summarize_minutes(minutes)
+        save_minutes_summary(minutes.id, summary)
+        # Also attach summary text to the minutes itself
+        minutes.summary = summary.summary
+        save_minutes(minutes)
+        print(f"[AUTO] Minutes summary saved persistently for {minutes.id}")
+        return summary
+    except Exception as e:
+        print(f"[WARN] Auto-summarization failed for minutes {minutes.id}: {e}")
+        return None
+
+
+@app.get("/api/minutes")
+async def list_minutes(limit: int = Query(10, ge=1, le=50)):
+    """List recent minutes from the connected city."""
+    if not connector:
+        raise HTTPException(status_code=503, detail="Connector not initialized")
+
+    try:
+        # Try DB first
+        minutes_list = db_list_minutes(limit=limit)
+        if minutes_list:
+            return {"minutes": minutes_list, "city": PARIS_TX_CONFIG.name}
+
+        # Fall back to connector
+        minutes_list = await connector.list_minutes(limit=limit)
+        enriched = []
+        for m in minutes_list:
+            m["has_summary"] = minutes_summary_exists(m["id"])
+            enriched.append(m)
+        return {"minutes": enriched, "city": PARIS_TX_CONFIG.name}
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Failed to fetch minutes: {str(e)}")
+
+
+@app.get("/api/minutes/{minutes_id}")
+async def get_minutes_endpoint(minutes_id: str):
+    """Get a specific minutes document with full details and its summary if available."""
+    # Check persistent storage first
+    minutes = get_minutes(minutes_id)
+    if minutes:
+        summary = get_minutes_summary(minutes_id)
+        return {"minutes": minutes, "summary": summary}
+
+    # Otherwise fetch fresh
+    if not connector:
+        raise HTTPException(status_code=503, detail="Connector not initialized")
+
+    try:
+        latest = await connector.get_latest_minutes()
+        if latest and latest.id == minutes_id:
+            save_minutes(latest)
+            # Auto-summarize if not already done
+            if summarizer and not minutes_summary_exists(minutes_id):
+                await _auto_summarize_minutes(latest)
+            return {
+                "minutes": latest,
+                "summary": get_minutes_summary(minutes_id),
+            }
+        else:
+            # Try to find it in the list
+            minutes_list = await connector.fetch_minutes_list()
+            for m in minutes_list:
+                if m["id"] == minutes_id:
+                    if m.get("document_url"):
+                        raw_text = await connector.fetch_agenda_document_text(m["document_url"])
+                        minutes = Minutes(
+                            id=m["id"],
+                            city=PARIS_TX_CONFIG.name,
+                            state=PARIS_TX_CONFIG.state,
+                            meeting_date=m["meeting_date"] or datetime.utcnow(),
+                            title=m["title"],
+                            url=m["url"] or "",
+                            document_url=m.get("document_url"),
+                            raw_text=raw_text,
+                        )
+                        save_minutes(minutes)
+                        # Auto-summarize if not already done
+                        if summarizer and not minutes_summary_exists(minutes_id):
+                            await _auto_summarize_minutes(minutes)
+                        return {
+                            "minutes": minutes,
+                            "summary": get_minutes_summary(minutes_id),
+                        }
+            raise HTTPException(status_code=404, detail=f"Minutes {minutes_id} not found")
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Failed to fetch minutes: {str(e)}")
+
+
+@app.post("/api/minutes/fetch-latest")
+async def fetch_latest_minutes():
+    """Fetch and store the latest minutes from the connected city.
+    Auto-summarizes and saves the summary persistently so everyone can see it."""
+    if not connector:
+        raise HTTPException(status_code=503, detail="Connector not initialized")
+
+    try:
+        minutes = await connector.get_latest_minutes()
+        if not minutes:
+            raise HTTPException(status_code=404, detail="No minutes found")
+
+        save_minutes(minutes)
+
+        # Auto-summarize and save persistently
+        if summarizer:
+            await _auto_summarize_minutes(minutes)
+
+        return {
+            "minutes": minutes,
+            "summary": get_minutes_summary(minutes.id),
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Failed to fetch latest minutes: {str(e)}")
+
+
+@app.post("/api/minutes/summarize")
+async def summarize_minutes_endpoint(request: SummaryRequest):
+    """Summarize minutes using LLM. Results are saved persistently."""
+    if not summarizer:
+        raise HTTPException(
+            status_code=503,
+            detail="LLM summarizer not available. Set DEEPSEEK_API_KEY environment variable.",
+        )
+
+    # Check persistent store first (so everyone sees the same summary)
+    existing = get_minutes_summary(request.agenda_id)
+    if existing:
+        return existing
+
+    # Get the minutes
+    minutes = get_minutes(request.agenda_id)
+    if not minutes:
+        # Try to fetch it
+        if not connector:
+            raise HTTPException(status_code=503, detail="Connector not initialized")
+        try:
+            latest = await connector.get_latest_minutes()
+            if latest and latest.id == request.agenda_id:
+                minutes = latest
+                save_minutes(minutes)
+            else:
+                raise HTTPException(status_code=404, detail=f"Minutes {request.agenda_id} not found")
+        except HTTPException:
+            raise
+        except Exception as e:
+            raise HTTPException(status_code=502, detail=f"Failed to fetch minutes: {str(e)}")
+
+    try:
+        summary = await summarizer.summarize_minutes(minutes)
+        save_minutes_summary(minutes.id, summary)
+        return summary
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Summarization failed: {str(e)}")
 
 
 # --- Summarization ---

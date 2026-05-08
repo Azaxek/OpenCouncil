@@ -36,6 +36,22 @@ class Agenda(BaseModel):
     ingested_at: datetime = Field(default_factory=datetime.utcnow)
 
 
+class Minutes(BaseModel):
+    """A city council meeting minutes document (the official record of what happened)."""
+    id: str
+    city: str = "Paris"
+    state: str = "TX"
+    meeting_date: datetime
+    meeting_type: str = "City Council Meeting"
+    title: str
+    url: str
+    document_url: Optional[str] = None
+    raw_text: Optional[str] = None
+    summary: Optional[str] = None
+    source: str = "laserfiche"
+    ingested_at: datetime = Field(default_factory=datetime.utcnow)
+
+
 class CityConfig(BaseModel):
     """Configuration for a connected city."""
     name: str

@@ -31,12 +31,13 @@ from xml.etree import ElementTree as ET
 
 import httpx
 
-from models.schemas import Agenda, AgendaItem
+from models.schemas import Agenda, AgendaItem, Minutes
 
 # Laserfiche folder IDs for Paris, TX
 LASERFICHE_BASE = "https://documents.paristexas.gov/WebLink"
 CITY_COUNCIL_FOLDER_ID = "5320"
 AGENDA_PACKETS_FOLDER_ID = "5321"
+MINUTES_FOLDER_ID = "20"
 DBID = "0"
 
 
@@ -425,4 +426,183 @@ class LaserficheConnector:
                 "document_url": a["document_url"],
             }
             for a in agendas
+        ]
+
+    # ──────────────────────────────────────────
+    # Minutes (official records of what happened)
+    # ──────────────────────────────────────────
+
+    async def _get_current_year_minutes_folder_id(self) -> Optional[str]:
+        """Find the folder ID for the current year's minutes.
+
+        Minutes folder structure:
+          Minutes (20) -> Year (e.g. 2026, id=1396340) -> Documents directly
+        """
+        items = await self._fetch_rss(MINUTES_FOLDER_ID)
+        if not items:
+            return None
+
+        current_year = datetime.now(timezone.utc).year
+
+        # Look for the current year folder
+        for item in items:
+            if item["is_folder"] and item["title"] == str(current_year):
+                return item["entity_id"]
+
+        # Fall back to the most recent year folder
+        year_folders = []
+        for item in items:
+            if item["is_folder"] and item["title"].isdigit():
+                year_folders.append((int(item["title"]), item["entity_id"]))
+
+        if year_folders:
+            year_folders.sort(key=lambda x: x[0], reverse=True)
+            return year_folders[0][1]
+
+        return None
+
+    def _parse_date_from_minutes_title(self, title: str) -> Optional[datetime]:
+        """Extract a date from a minutes document title like '01-12-2026'.
+
+        Minutes documents are named by date (MM-DD-YYYY) directly.
+        """
+        if not title:
+            return None
+
+        # Match MM-DD-YYYY
+        match = re.match(r"(\d{1,2})-(\d{1,2})-(\d{4})", title.strip())
+        if match:
+            try:
+                month = int(match.group(1))
+                day = int(match.group(2))
+                year = int(match.group(3))
+                if 1 <= month <= 12 and 1 <= day <= 31:
+                    return datetime(year, month, day, tzinfo=timezone.utc)
+            except ValueError:
+                pass
+
+        return None
+
+    async def fetch_minutes_list(self, limit: int = 20) -> list[dict]:
+        """Fetch the list of recent minutes documents from Laserfiche.
+
+        Minutes are stored directly in year folders (no subfolders):
+          Minutes (20) -> 2026 (1396340) -> 01-12-2026 (doc), 01-28-2026 (doc), ...
+        """
+        year_folder_id = await self._get_current_year_minutes_folder_id()
+        if not year_folder_id:
+            print("[WARN] No year folder found in Minutes")
+            return []
+
+        # Fetch documents from the year folder
+        documents = await self._fetch_rss(year_folder_id)
+        if not documents:
+            return []
+
+        # Filter to only documents (not subfolders)
+        documents = [d for d in documents if d["is_document"]]
+
+        # Sort by pub_date descending (most recent first)
+        documents.sort(
+            key=lambda d: d["pub_date"] or datetime.min.replace(tzinfo=timezone.utc),
+            reverse=True,
+        )
+
+        # Limit
+        documents = documents[:limit]
+
+        minutes_list = []
+        for doc in documents:
+            # Parse meeting date from the document title (e.g. "01-12-2026")
+            meeting_date = self._parse_date_from_minutes_title(doc["title"])
+
+            # Fall back to pubDate
+            if not meeting_date and doc["pub_date"]:
+                meeting_date = doc["pub_date"]
+
+            document_url = (
+                self._document_viewer_url(doc["entity_id"])
+                if doc["entity_id"]
+                else None
+            )
+
+            # Build a descriptive title
+            title = doc["title"]
+            display_title = f"City Council Meeting Minutes - {title}"
+
+            minutes_list.append({
+                "id": str(uuid.uuid4())[:8],
+                "title": display_title,
+                "meeting_date": meeting_date,
+                "url": document_url,
+                "document_url": document_url,
+                "doc_id": doc["entity_id"],
+                "pub_date": doc["pub_date"],
+            })
+
+        # Sort by date descending
+        minutes_list.sort(
+            key=lambda m: m["meeting_date"] or datetime.min.replace(tzinfo=timezone.utc),
+            reverse=True,
+        )
+
+        return minutes_list[:limit]
+
+    async def get_latest_minutes(self) -> Optional[Minutes]:
+        """Fetch the most recent city council minutes from Laserfiche."""
+        minutes_list = await self.fetch_minutes_list(limit=5)
+        if not minutes_list:
+            return None
+
+        latest = minutes_list[0]
+
+        # Access the document viewer (returns HTML, not PDF text)
+        raw_text = None
+        if latest.get("document_url"):
+            raw_text = await self.fetch_agenda_document_text(
+                latest["document_url"]
+            )
+
+        # Determine meeting type from title
+        title_lower = (latest["title"] or "").lower()
+        if "regular" in title_lower:
+            meeting_type = "City Council Regular Meeting"
+        elif "special" in title_lower or "called" in title_lower:
+            meeting_type = "City Council Special Meeting"
+        elif "workshop" in title_lower:
+            meeting_type = "City Council Workshop"
+        elif "executive" in title_lower:
+            meeting_type = "Executive Session"
+        else:
+            meeting_type = "City Council Meeting"
+
+        return Minutes(
+            id=latest["id"],
+            city=self.city,
+            state=self.state,
+            meeting_date=latest["meeting_date"] or datetime.now(timezone.utc),
+            meeting_type=meeting_type,
+            title=latest["title"],
+            url=latest["url"] or "",
+            document_url=latest.get("document_url"),
+            raw_text=raw_text,
+            source="laserfiche",
+        )
+
+    async def list_minutes(self, limit: int = 10) -> list[dict]:
+        """List recent minutes with metadata (no full parsing)."""
+        minutes_list = await self.fetch_minutes_list(limit=limit)
+        return [
+            {
+                "id": m["id"],
+                "title": m["title"],
+                "meeting_date": (
+                    m["meeting_date"].isoformat()
+                    if m["meeting_date"]
+                    else None
+                ),
+                "url": m["url"],
+                "document_url": m["document_url"],
+            }
+            for m in minutes_list
         ]

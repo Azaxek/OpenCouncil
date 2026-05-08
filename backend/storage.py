@@ -145,9 +145,43 @@ def _init_sqlite():
                 FOREIGN KEY (agenda_id) REFERENCES agendas(id) ON DELETE CASCADE
             );
 
+            CREATE TABLE IF NOT EXISTS minutes (
+                id TEXT PRIMARY KEY,
+                city TEXT NOT NULL DEFAULT 'Paris',
+                state TEXT NOT NULL DEFAULT 'TX',
+                meeting_date TEXT NOT NULL,
+                meeting_type TEXT NOT NULL DEFAULT 'City Council Meeting',
+                title TEXT NOT NULL,
+                url TEXT NOT NULL DEFAULT '',
+                document_url TEXT,
+                raw_text TEXT,
+                summary TEXT,
+                source TEXT DEFAULT 'laserfiche',
+                ingested_at TEXT NOT NULL DEFAULT (datetime('now')),
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+
+            CREATE TABLE IF NOT EXISTS minutes_summaries (
+                minutes_id TEXT PRIMARY KEY,
+                meeting_date TEXT NOT NULL,
+                meeting_type TEXT NOT NULL,
+                summary TEXT NOT NULL,
+                key_decisions TEXT NOT NULL DEFAULT '[]',
+                budget_items TEXT NOT NULL DEFAULT '[]',
+                public_comment_opportunities TEXT NOT NULL DEFAULT '[]',
+                items TEXT NOT NULL DEFAULT '[]',
+                model_used TEXT NOT NULL DEFAULT 'deepseek-chat',
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+                FOREIGN KEY (minutes_id) REFERENCES minutes(id) ON DELETE CASCADE
+            );
+
             CREATE INDEX IF NOT EXISTS idx_agendas_date ON agendas(meeting_date DESC);
             CREATE INDEX IF NOT EXISTS idx_agendas_city ON agendas(city, state);
             CREATE INDEX IF NOT EXISTS idx_summaries_date ON summaries(meeting_date DESC);
+            CREATE INDEX IF NOT EXISTS idx_minutes_date ON minutes(meeting_date DESC);
+            CREATE INDEX IF NOT EXISTS idx_minutes_city ON minutes(city, state);
         """)
         conn.commit()
     finally:
@@ -214,6 +248,45 @@ def _init_pg():
             """)
             cur.execute("""
                 CREATE INDEX IF NOT EXISTS idx_agendas_city ON agendas(city, state);
+            """)
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS minutes (
+                    id TEXT PRIMARY KEY,
+                    city TEXT NOT NULL DEFAULT 'Paris',
+                    state TEXT NOT NULL DEFAULT 'TX',
+                    meeting_date TEXT NOT NULL,
+                    meeting_type TEXT NOT NULL DEFAULT 'City Council Meeting',
+                    title TEXT NOT NULL,
+                    url TEXT NOT NULL DEFAULT '',
+                    document_url TEXT,
+                    raw_text TEXT,
+                    summary TEXT,
+                    source TEXT DEFAULT 'laserfiche',
+                    ingested_at TIMESTAMP NOT NULL DEFAULT NOW(),
+                    created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+                    updated_at TIMESTAMP NOT NULL DEFAULT NOW()
+                );
+            """)
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS minutes_summaries (
+                    minutes_id TEXT PRIMARY KEY REFERENCES minutes(id) ON DELETE CASCADE,
+                    meeting_date TEXT NOT NULL,
+                    meeting_type TEXT NOT NULL,
+                    summary TEXT NOT NULL,
+                    key_decisions TEXT NOT NULL DEFAULT '[]',
+                    budget_items TEXT NOT NULL DEFAULT '[]',
+                    public_comment_opportunities TEXT NOT NULL DEFAULT '[]',
+                    items TEXT NOT NULL DEFAULT '[]',
+                    model_used TEXT NOT NULL DEFAULT 'deepseek-chat',
+                    created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+                    updated_at TIMESTAMP NOT NULL DEFAULT NOW()
+                );
+            """)
+            cur.execute("""
+                CREATE INDEX IF NOT EXISTS idx_minutes_date ON minutes(meeting_date DESC);
+            """)
+            cur.execute("""
+                CREATE INDEX IF NOT EXISTS idx_minutes_city ON minutes(city, state);
             """)
             cur.execute("""
                 CREATE INDEX IF NOT EXISTS idx_summaries_date ON summaries(meeting_date DESC);
@@ -655,6 +728,359 @@ def _summary_exists_pg(agenda_id: str) -> bool:
         with conn.cursor() as cur:
             cur.execute(
                 "SELECT 1 FROM summaries WHERE agenda_id = %s", (agenda_id,)
+            )
+            return cur.fetchone() is not None
+    finally:
+        conn.close()
+
+
+# --- Minutes Storage ---
+
+
+def save_minutes(minutes: Minutes) -> None:
+    """Save or update minutes in the database."""
+    if USE_POSTGRES:
+        _save_minutes_pg(minutes)
+    else:
+        _save_minutes_sqlite(minutes)
+
+
+def _save_minutes_sqlite(minutes: Minutes) -> None:
+    """Save minutes to SQLite."""
+    conn = sqlite3.connect(str(DB_PATH))
+    try:
+        conn.execute(
+            """INSERT OR REPLACE INTO minutes
+               (id, city, state, meeting_date, meeting_type, title, url,
+                document_url, raw_text, summary, source, ingested_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                minutes.id, minutes.city, minutes.state,
+                minutes.meeting_date.isoformat(), minutes.meeting_type,
+                minutes.title, minutes.url, minutes.document_url,
+                minutes.raw_text, minutes.summary, minutes.source,
+                minutes.ingested_at.isoformat(),
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _save_minutes_pg(minutes: Minutes) -> None:
+    """Save minutes to PostgreSQL."""
+    conn = _get_pg_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """INSERT INTO minutes
+                   (id, city, state, meeting_date, meeting_type, title, url,
+                    document_url, raw_text, summary, source, ingested_at)
+                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                   ON CONFLICT (id) DO UPDATE SET
+                       city = EXCLUDED.city,
+                       state = EXCLUDED.state,
+                       meeting_date = EXCLUDED.meeting_date,
+                       meeting_type = EXCLUDED.meeting_type,
+                       title = EXCLUDED.title,
+                       url = EXCLUDED.url,
+                       document_url = EXCLUDED.document_url,
+                       raw_text = EXCLUDED.raw_text,
+                       summary = EXCLUDED.summary,
+                       source = EXCLUDED.source,
+                       updated_at = NOW()""",
+                (
+                    minutes.id, minutes.city, minutes.state,
+                    minutes.meeting_date.isoformat(), minutes.meeting_type,
+                    minutes.title, minutes.url, minutes.document_url,
+                    minutes.raw_text, minutes.summary, minutes.source,
+                    minutes.ingested_at.isoformat(),
+                ),
+            )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def get_minutes(minutes_id: str) -> Optional[Minutes]:
+    """Get minutes by ID from database."""
+    if USE_POSTGRES:
+        return _get_minutes_pg(minutes_id)
+    return _get_minutes_sqlite(minutes_id)
+
+
+def _get_minutes_sqlite(minutes_id: str) -> Optional[Minutes]:
+    """Get minutes from SQLite."""
+    conn = sqlite3.connect(str(DB_PATH))
+    try:
+        conn.row_factory = sqlite3.Row
+        row = conn.execute(
+            "SELECT * FROM minutes WHERE id = ?", (minutes_id,)
+        ).fetchone()
+        if not row:
+            return None
+        return Minutes(
+            id=row["id"],
+            city=row["city"],
+            state=row["state"],
+            meeting_date=datetime.fromisoformat(row["meeting_date"]),
+            meeting_type=row["meeting_type"],
+            title=row["title"],
+            url=row["url"],
+            document_url=row["document_url"],
+            raw_text=row["raw_text"],
+            summary=row["summary"],
+            source=row["source"],
+        )
+    finally:
+        conn.close()
+
+
+def _get_minutes_pg(minutes_id: str) -> Optional[Minutes]:
+    """Get minutes from PostgreSQL."""
+    conn = _get_pg_conn()
+    try:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(
+                "SELECT * FROM minutes WHERE id = %s", (minutes_id,)
+            )
+            row = cur.fetchone()
+            if not row:
+                return None
+            return Minutes(
+                id=row["id"],
+                city=row["city"],
+                state=row["state"],
+                meeting_date=datetime.fromisoformat(row["meeting_date"]) if isinstance(row["meeting_date"], str) else row["meeting_date"],
+                meeting_type=row["meeting_type"],
+                title=row["title"],
+                url=row["url"],
+                document_url=row["document_url"],
+                raw_text=row["raw_text"],
+                summary=row["summary"],
+                source=row["source"],
+            )
+    finally:
+        conn.close()
+
+
+def list_minutes(limit: int = 10) -> list[dict]:
+    """List recent minutes from database."""
+    if USE_POSTGRES:
+        return _list_minutes_pg(limit)
+    return _list_minutes_sqlite(limit)
+
+
+def _list_minutes_sqlite(limit: int = 10) -> list[dict]:
+    """List minutes from SQLite."""
+    conn = sqlite3.connect(str(DB_PATH))
+    try:
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            """SELECT id, city, state, meeting_date, meeting_type, title, url,
+                      document_url, source
+               FROM minutes
+               ORDER BY meeting_date DESC
+               LIMIT ?""",
+            (limit,),
+        ).fetchall()
+        return [
+            {
+                "id": r["id"],
+                "title": r["title"],
+                "meeting_date": r["meeting_date"],
+                "meeting_type": r["meeting_type"],
+                "url": r["url"],
+                "document_url": r["document_url"],
+            }
+            for r in rows
+        ]
+    finally:
+        conn.close()
+
+
+def _list_minutes_pg(limit: int = 10) -> list[dict]:
+    """List minutes from PostgreSQL."""
+    conn = _get_pg_conn()
+    try:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(
+                """SELECT id, city, state, meeting_date, meeting_type, title, url,
+                          document_url, source
+                   FROM minutes
+                   ORDER BY meeting_date DESC
+                   LIMIT %s""",
+                (limit,),
+            )
+            rows = cur.fetchall()
+            return [
+                {
+                    "id": r["id"],
+                    "title": r["title"],
+                    "meeting_date": r["meeting_date"],
+                    "meeting_type": r["meeting_type"],
+                    "url": r["url"],
+                    "document_url": r["document_url"],
+                }
+                for r in rows
+            ]
+    finally:
+        conn.close()
+
+
+# --- Minutes Summaries Storage ---
+
+
+def save_minutes_summary(minutes_id: str, summary: SummaryResponse) -> None:
+    """Save a summary for minutes."""
+    if USE_POSTGRES:
+        _save_minutes_summary_pg(minutes_id, summary)
+    else:
+        _save_minutes_summary_sqlite(minutes_id, summary)
+
+
+def _save_minutes_summary_sqlite(minutes_id: str, summary: SummaryResponse) -> None:
+    """Save minutes summary to SQLite."""
+    conn = sqlite3.connect(str(DB_PATH))
+    try:
+        conn.execute(
+            """INSERT OR REPLACE INTO minutes_summaries
+               (minutes_id, meeting_date, meeting_type, summary,
+                key_decisions, budget_items, public_comment_opportunities, items)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                minutes_id,
+                summary.meeting_date.isoformat(),
+                summary.meeting_type,
+                summary.summary,
+                json.dumps([k.model_dump() if hasattr(k, 'model_dump') else k for k in summary.key_decisions]),
+                json.dumps([b.model_dump() if hasattr(b, 'model_dump') else b for b in summary.budget_items]),
+                json.dumps([p.model_dump() if hasattr(p, 'model_dump') else p for p in summary.public_comment_opportunities]),
+                json.dumps([i.model_dump() if hasattr(i, 'model_dump') else i for i in summary.items]),
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _save_minutes_summary_pg(minutes_id: str, summary: SummaryResponse) -> None:
+    """Save minutes summary to PostgreSQL."""
+    conn = _get_pg_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """INSERT INTO minutes_summaries
+                   (minutes_id, meeting_date, meeting_type, summary,
+                    key_decisions, budget_items, public_comment_opportunities, items)
+                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                   ON CONFLICT (minutes_id) DO UPDATE SET
+                       meeting_date = EXCLUDED.meeting_date,
+                       meeting_type = EXCLUDED.meeting_type,
+                       summary = EXCLUDED.summary,
+                       key_decisions = EXCLUDED.key_decisions,
+                       budget_items = EXCLUDED.budget_items,
+                       public_comment_opportunities = EXCLUDED.public_comment_opportunities,
+                       items = EXCLUDED.items,
+                       updated_at = NOW()""",
+                (
+                    minutes_id,
+                    summary.meeting_date.isoformat(),
+                    summary.meeting_type,
+                    summary.summary,
+                    json.dumps([k.model_dump() if hasattr(k, 'model_dump') else k for k in summary.key_decisions]),
+                    json.dumps([b.model_dump() if hasattr(b, 'model_dump') else b for b in summary.budget_items]),
+                    json.dumps([p.model_dump() if hasattr(p, 'model_dump') else p for p in summary.public_comment_opportunities]),
+                    json.dumps([i.model_dump() if hasattr(i, 'model_dump') else i for i in summary.items]),
+                ),
+            )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def get_minutes_summary(minutes_id: str) -> Optional[SummaryResponse]:
+    """Get summary for minutes by ID."""
+    if USE_POSTGRES:
+        return _get_minutes_summary_pg(minutes_id)
+    return _get_minutes_summary_sqlite(minutes_id)
+
+
+def _get_minutes_summary_sqlite(minutes_id: str) -> Optional[SummaryResponse]:
+    """Get minutes summary from SQLite."""
+    conn = sqlite3.connect(str(DB_PATH))
+    try:
+        conn.row_factory = sqlite3.Row
+        row = conn.execute(
+            "SELECT * FROM minutes_summaries WHERE minutes_id = ?", (minutes_id,)
+        ).fetchone()
+        if not row:
+            return None
+        return SummaryResponse(
+            agenda_id=row["minutes_id"],
+            meeting_date=datetime.fromisoformat(row["meeting_date"]),
+            meeting_type=row["meeting_type"],
+            summary=row["summary"],
+            key_decisions=json.loads(row["key_decisions"]),
+            budget_items=json.loads(row["budget_items"]),
+            public_comment_opportunities=json.loads(row["public_comment_opportunities"]),
+            items=json.loads(row["items"]),
+        )
+    finally:
+        conn.close()
+
+
+def _get_minutes_summary_pg(minutes_id: str) -> Optional[SummaryResponse]:
+    """Get minutes summary from PostgreSQL."""
+    conn = _get_pg_conn()
+    try:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(
+                "SELECT * FROM minutes_summaries WHERE minutes_id = %s", (minutes_id,)
+            )
+            row = cur.fetchone()
+            if not row:
+                return None
+            return SummaryResponse(
+                agenda_id=row["minutes_id"],
+                meeting_date=datetime.fromisoformat(row["meeting_date"]) if isinstance(row["meeting_date"], str) else row["meeting_date"],
+                meeting_type=row["meeting_type"],
+                summary=row["summary"],
+                key_decisions=json.loads(row["key_decisions"]),
+                budget_items=json.loads(row["budget_items"]),
+                public_comment_opportunities=json.loads(row["public_comment_opportunities"]),
+                items=json.loads(row["items"]),
+            )
+    finally:
+        conn.close()
+
+
+def minutes_summary_exists(minutes_id: str) -> bool:
+    """Check if a summary already exists for these minutes."""
+    if USE_POSTGRES:
+        return _minutes_summary_exists_pg(minutes_id)
+    return _minutes_summary_exists_sqlite(minutes_id)
+
+
+def _minutes_summary_exists_sqlite(minutes_id: str) -> bool:
+    """Check minutes summary existence in SQLite."""
+    conn = sqlite3.connect(str(DB_PATH))
+    try:
+        row = conn.execute(
+            "SELECT 1 FROM minutes_summaries WHERE minutes_id = ?", (minutes_id,)
+        ).fetchone()
+        return row is not None
+    finally:
+        conn.close()
+
+
+def _minutes_summary_exists_pg(minutes_id: str) -> bool:
+    """Check minutes summary existence in PostgreSQL."""
+    conn = _get_pg_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT 1 FROM minutes_summaries WHERE minutes_id = %s", (minutes_id,)
             )
             return cur.fetchone() is not None
     finally:

@@ -9,9 +9,9 @@
 import { NextRequest, NextResponse } from "next/server";
 
 function getBackendUrl(): string {
-  // On Vercel, use the Railway backend URL
+  // On Vercel, use the HF Spaces backend URL
   if (process.env.NEXT_PUBLIC_API_URL) {
-    return process.env.NEXT_PUBLIC_API_URL;
+    return process.env.NEXT_PUBLIC_API_URL.trim();
   }
   // Local dev
   return "http://localhost:8000";
