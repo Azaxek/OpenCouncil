@@ -22,6 +22,7 @@ from typing import Optional
 
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel, Field
 
 from connectors.laserfiche import LaserficheConnector
 from crypto_utils import get_api_key_from_env
@@ -458,6 +459,75 @@ async def summarize_minutes_endpoint(request: SummaryRequest):
         return summary
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"Summarization failed: {str(e)}")
+
+
+# --- Seed Endpoint (for pre-computed data from local OCR pipeline) ---
+
+
+class SeedRequest(BaseModel):
+    """Request to seed pre-computed minutes + summary data."""
+    minutes_id: str
+    title: str
+    meeting_date: str
+    meeting_type: str = "City Council Meeting"
+    url: str
+    document_url: Optional[str] = None
+    raw_text: Optional[str] = None
+    page_image_urls: list[str] = Field(default_factory=list)
+    city: str = "Paris"
+    state: str = "TX"
+    source: str = "laserfiche"
+    summary_text: str = ""
+    key_decisions: list[dict] = Field(default_factory=list)
+    budget_items: list[dict] = Field(default_factory=list)
+    public_comment_opportunities: list[dict] = Field(default_factory=list)
+    items: list[dict] = Field(default_factory=list)
+
+
+@app.post("/api/minutes/seed")
+async def seed_minutes(request: SeedRequest):
+    """Seed pre-computed minutes + summary data into the database.
+    
+    Used to push OCR results computed locally to the HF Space's PostgreSQL database,
+    since the HF Space cannot reach documents.paristexas.gov directly.
+    """
+    try:
+        # Create Minutes object
+        minutes = Minutes(
+            id=request.minutes_id,
+            city=request.city,
+            state=request.state,
+            meeting_date=datetime.fromisoformat(request.meeting_date),
+            meeting_type=request.meeting_type,
+            title=request.title,
+            url=request.url,
+            document_url=request.document_url,
+            raw_text=request.raw_text,
+            page_image_urls=request.page_image_urls,
+            source=request.source,
+        )
+        save_minutes(minutes)
+
+        # Create SummaryResponse
+        summary = SummaryResponse(
+            minutes_id=request.minutes_id,
+            meeting_date=minutes.meeting_date,
+            meeting_type=minutes.meeting_type,
+            summary=request.summary_text,
+            key_decisions=request.key_decisions,
+            budget_items=request.budget_items,
+            public_comment_opportunities=request.public_comment_opportunities,
+            items=request.items,
+        )
+        save_minutes_summary(request.minutes_id, summary)
+
+        return {
+            "status": "ok",
+            "minutes_id": request.minutes_id,
+            "summary_saved": bool(request.summary_text),
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Seed failed: {str(e)}")
 
 
 # --- City Configuration ---
