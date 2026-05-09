@@ -3,9 +3,11 @@
 
 # SQLite database (contains cached agenda data)
 # Keep cities.json tracked (it's config, not runtime data)
-data/civic_city_hub.db
-data/civic_city_hub.db-wal
-data/civic_city_hub.db-shm
+# NOTE: The database file is committed to allow HF Spaces to serve pre-computed
+# OCR results without needing to reach documents.paristexas.gov.
+# data/civic_city_hub.db
+# data/civic_city_hub.db-wal
+# data/civic_city_hub.db-shm
 
 # Python cache
 __pycache__/
