@@ -9,4 +9,7 @@ python-dotenv>=1.0.0
 openai>=1.0.0
 cryptography>=42.0.0
 psycopg2-binary>=2.9.0
+pytesseract>=0.3.10
+Pillow>=10.0.0
 # Note: Using html.parser instead of lxml to avoid build issues
+# Note: pytesseract + Pillow provide free OCR for scanned document images

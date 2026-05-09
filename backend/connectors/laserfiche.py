@@ -21,8 +21,9 @@ Page image URL pattern:
 
 NOTE: Laserfiche stores documents as scanned images (TIFF), not text PDFs.
 The docview.aspx returns an HTML viewer page with page image URLs embedded
-in the toolbar. We extract these URLs and pass them to GPT-4o Vision for
-text extraction from the scanned images.
+in the toolbar. We download these page images and use Tesseract OCR (free,
+open-source) to extract text from the scanned images, then pass the text
+to DeepSeek for summarization.
 """
 
 import json
@@ -323,7 +324,7 @@ class LaserficheConnector:
         """Fetch and extract page image URLs from a document viewer page.
 
         Returns a list of full URLs to each page image, which can be
-        passed to GPT-4o Vision for text extraction.
+        used for OCR text extraction.
         """
         if not document_url:
             return []
@@ -339,6 +340,70 @@ class LaserficheConnector:
                 f"[WARN] Error fetching page image URLs: {e}"
             )
             return []
+
+    async def fetch_page_images(
+        self, document_url: str
+    ) -> list[bytes]:
+        """Download actual page image bytes from Laserfiche.
+
+        Visits the docview.aspx page to get session cookies, then
+        downloads each page image via the Page.aspx URL pattern.
+
+        Returns a list of raw image bytes (one per page), which can
+        be processed by Tesseract OCR.
+        """
+        if not document_url:
+            return []
+
+        # First, visit the docview page to establish session cookies
+        try:
+            response = await self.client.get(document_url)
+            response.raise_for_status()
+            html = response.text
+        except Exception as e:
+            print(f"[WARN] Error accessing document viewer: {e}")
+            return []
+
+        # Extract page image URLs
+        page_urls = self._extract_page_image_urls(html, document_url)
+        if not page_urls:
+            print("[WARN] No page image URLs found in document viewer")
+            return []
+
+        # Download each page image
+        images: list[bytes] = []
+        for url in page_urls:
+            try:
+                img_response = await self.client.get(url)
+                img_response.raise_for_status()
+                images.append(img_response.content)
+            except Exception as e:
+                print(f"[WARN] Error downloading page image {url}: {e}")
+                # Try alternative: access the page via docview with page parameter
+                try:
+                    # Extract docId and page number from URL
+                    match = re.search(r"Page(\d+)\.aspx", url)
+                    page_num = match.group(1) if match else "1"
+                    match = re.search(r"/doc/(\d+)/", url)
+                    doc_id = match.group(1) if match else ""
+
+                    if doc_id:
+                        # Try accessing via docview.aspx with page parameter
+                        alt_url = (
+                            f"{self.base_url}/docview.aspx"
+                            f"?id={doc_id}&dbid={DBID}&page={page_num}"
+                        )
+                        alt_response = await self.client.get(alt_url)
+                        alt_response.raise_for_status()
+                        # The page HTML might contain the image data
+                        # embedded in a script or data URL
+                        images.append(alt_response.content)
+                except Exception as e2:
+                    print(
+                        f"[WARN] Alternative download also failed: {e2}"
+                    )
+
+        return images
 
     def _extract_page_image_urls(
         self, html: str, viewer_url: str

@@ -5,10 +5,12 @@ FROM python:3.12-slim
 
 WORKDIR /app
 
-# Install system dependencies (psycopg2 needs libpq)
+# Install system dependencies (psycopg2 needs libpq, Tesseract OCR needs tesseract-ocr)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     gcc \
     libpq-dev \
+    tesseract-ocr \
+    tesseract-ocr-eng \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy requirements first for layer caching

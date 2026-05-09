@@ -102,7 +102,7 @@ def _detect_city_from_ip(request: Request) -> dict:
 
 async def _auto_summarize_minutes(minutes: Minutes) -> Optional[SummaryResponse]:
     """Auto-summarize minutes and save persistently."""
-    global summarizer
+    global summarizer, connector
     if not summarizer or not minutes:
         return None
 
@@ -113,7 +113,24 @@ async def _auto_summarize_minutes(minutes: Minutes) -> Optional[SummaryResponse]
 
     try:
         print(f"[AUTO] Summarizing minutes {minutes.id}...")
-        summary = await summarizer.summarize_minutes(minutes)
+
+        # If the document has page image URLs but no raw text,
+        # provide an image fetcher for OCR-based summarization
+        image_fetcher = None
+        if (
+            minutes.page_image_urls
+            and not minutes.raw_text
+            and connector
+            and minutes.document_url
+        ):
+            image_fetcher = lambda: connector.fetch_page_images(
+                minutes.document_url
+            )
+
+        summary = await summarizer.summarize_minutes(
+            minutes,
+            image_fetcher=image_fetcher,
+        )
         save_minutes_summary(minutes.id, summary)
         # Also attach summary text to the minutes itself
         minutes.summary = summary.summary
@@ -140,30 +157,23 @@ async def lifespan(app: FastAPI):
         state=PARIS_TX_CONFIG.state,
     )
 
-    # Initialize LLM summarizer with both DeepSeek and OpenAI keys
-    # DeepSeek: for text-based summarization (cheaper)
-    # OpenAI (GPT-4o Vision): for reading scanned document images (TIFF)
+    # Initialize LLM summarizer with DeepSeek key
+    # DeepSeek handles both text-based summarization and OCR-extracted text
+    # Tesseract OCR (free, open-source) extracts text from scanned images,
+    # then DeepSeek summarizes it — no paid API keys needed!
     #
     # DeepSeek key supports both plaintext (DEEPSEEK_API_KEY) and
     # encrypted (ENCRYPTED_DEEPSEEK_KEY + ENCRYPTION_KEY) modes.
     deepseek_key = get_api_key_from_env()
-    openai_key = os.getenv("OPENAI_API_KEY")
 
-    if deepseek_key or openai_key:
+    if deepseek_key:
         summarizer = LLMSummarizer(
             deepseek_key=deepseek_key,
-            openai_key=openai_key,
         )
-        providers = []
-        if deepseek_key:
-            providers.append("DeepSeek (text)")
-        if openai_key:
-            providers.append("GPT-4o Vision (scanned images)")
-        print(f"[OK] LLM summarizer initialized with: {', '.join(providers)}")
+        print(f"[OK] LLM summarizer initialized with DeepSeek (text + OCR)")
     else:
-        print("[WARN] No API keys set. Summarization will be unavailable.")
-        print("       Set DEEPSEEK_API_KEY and/or OPENAI_API_KEY in your environment or .env file.")
-        print("       OPENAI_API_KEY enables GPT-4o Vision for reading scanned document images.")
+        print("[WARN] No DEEPSEEK_API_KEY set. Summarization will be unavailable.")
+        print("       Set DEEPSEEK_API_KEY in your environment or .env file.")
         print("       For GitHub-safe deployment, set ENCRYPTED_DEEPSEEK_KEY + ENCRYPTION_KEY.")
 
     print(f"[OK] Civic City Hub API ready - serving {PARIS_TX_CONFIG.name}, {PARIS_TX_CONFIG.state}")
@@ -208,17 +218,17 @@ app.add_middleware(
 @app.get("/health")
 async def health():
     """Health check endpoint."""
-    providers = []
+    ocr_available = False
     if summarizer:
-        if summarizer.openai_client:
-            providers.append("gpt-4o-vision")
-        if summarizer.deepseek_client:
-            providers.append("deepseek-text")
+        ocr_available = (
+            summarizer._pytesseract_available
+            and summarizer._pillow_available
+        )
     return {
         "status": "ok",
         "city": f"{PARIS_TX_CONFIG.name}, {PARIS_TX_CONFIG.state}",
         "llm_available": summarizer is not None,
-        "llm_providers": providers,
+        "ocr_available": ocr_available,
         "storage": "postgresql" if USE_POSTGRES else "sqlite",
     }
 
@@ -381,14 +391,29 @@ async def summarize_minutes_endpoint(request: SummaryRequest):
                 minutes = latest
                 save_minutes(minutes)
             else:
-                raise HTTPException(status_code=404, detail=f"Minutes {request.agenda_id} not found")
+                raise HTTPException(status_code=404, detail=f"Minutes {request.minutes_id} not found")
         except HTTPException:
             raise
         except Exception as e:
             raise HTTPException(status_code=502, detail=f"Failed to fetch minutes: {str(e)}")
 
     try:
-        summary = await summarizer.summarize_minutes(minutes)
+        # Provide image fetcher for OCR-based summarization
+        image_fetcher = None
+        if (
+            minutes.page_image_urls
+            and not minutes.raw_text
+            and connector
+            and minutes.document_url
+        ):
+            image_fetcher = lambda: connector.fetch_page_images(
+                minutes.document_url
+            )
+
+        summary = await summarizer.summarize_minutes(
+            minutes,
+            image_fetcher=image_fetcher,
+        )
         save_minutes_summary(minutes.id, summary)
         return summary
     except Exception as e:
