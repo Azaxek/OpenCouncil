@@ -556,6 +556,46 @@ def _minutes_summary_exists_sqlite(minutes_id: str) -> bool:
         conn.close()
 
 
+# --- Database Reset ---
+
+
+def reset_database() -> None:
+    """Delete ALL minutes and summaries from the database.
+    
+    This is used when the user wants to "reset the articles" —
+    clearing out stale data so fresh minutes can be fetched.
+    """
+    if USE_POSTGRES:
+        _reset_database_pg()
+    else:
+        _reset_database_sqlite()
+
+
+def _reset_database_sqlite() -> None:
+    """Delete all minutes and summaries from SQLite."""
+    conn = sqlite3.connect(str(DB_PATH))
+    try:
+        conn.execute("DELETE FROM minutes_summaries")
+        conn.execute("DELETE FROM minutes")
+        conn.commit()
+        print("[DB] SQLite database reset — all minutes and summaries deleted.")
+    finally:
+        conn.close()
+
+
+def _reset_database_pg() -> None:
+    """Delete all minutes and summaries from PostgreSQL."""
+    conn = _get_pg_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM minutes_summaries")
+            cur.execute("DELETE FROM minutes")
+        conn.commit()
+        print("[DB] PostgreSQL database reset — all minutes and summaries deleted.")
+    finally:
+        conn.close()
+
+
 def _minutes_summary_exists_pg(minutes_id: str) -> bool:
     """Check minutes summary existence in PostgreSQL."""
     conn = _get_pg_conn()

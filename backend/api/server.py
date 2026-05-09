@@ -34,6 +34,7 @@ from storage import (
     save_minutes_summary,
     get_minutes_summary,
     minutes_summary_exists,
+    reset_database,
     USE_POSTGRES,
 )
 
@@ -335,6 +336,17 @@ async def get_minutes_endpoint(minutes_id: str):
         raise
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"Failed to fetch minutes: {str(e)}")
+
+
+@app.post("/api/minutes/reset")
+async def reset_minutes():
+    """Delete ALL stored minutes and summaries from the database.
+    This forces a fresh fetch of the latest minutes on next request."""
+    try:
+        reset_database()
+        return {"status": "ok", "message": "Database reset. All minutes and summaries deleted."}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to reset database: {str(e)}")
 
 
 @app.post("/api/minutes/fetch-latest")

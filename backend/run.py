@@ -43,6 +43,7 @@ if __name__ == "__main__":
     print(f"    Health:     http://localhost:{port}/health")
     print(f"    Minutes:    http://localhost:{port}/api/minutes")
     print(f"    Summarize:  http://localhost:{port}/api/minutes/summarize")
+    print(f"    Reset DB:   http://localhost:{port}/api/minutes/reset")
     print(f"    Docs:       http://localhost:{port}/docs")
     print("=" * 60)
 

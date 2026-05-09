@@ -237,6 +237,7 @@ class LaserficheConnector:
         # Limit
         documents = documents[:limit]
 
+        now = datetime.now(timezone.utc)
         minutes_list = []
         for doc in documents:
             # Parse meeting date from the document title (e.g. "01-12-2026")
@@ -245,6 +246,18 @@ class LaserficheConnector:
             # Fall back to pubDate
             if not meeting_date and doc["pub_date"]:
                 meeting_date = doc["pub_date"]
+
+            # Skip documents with future meeting dates — these are likely
+            # agenda packets uploaded in advance, not actual minutes.
+            # For example, "05-20-2026" uploaded on Apr 14 is an agenda
+            # for a future meeting, not minutes of a past meeting.
+            if meeting_date and meeting_date > now:
+                print(
+                    f"[SKIP] '{doc['title']}' has future meeting date "
+                    f"{meeting_date.strftime('%Y-%m-%d')}, skipping "
+                    f"(likely agenda packet, not minutes)"
+                )
+                continue
 
             document_url = (
                 self._document_viewer_url(doc["entity_id"])
