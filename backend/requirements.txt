@@ -12,6 +12,8 @@ psycopg2-binary>=2.9.0
 pytesseract>=0.3.10
 Pillow>=10.0.0
 PyMuPDF>=1.23.0
+numpy>=1.24.0
 # Note: Using html.parser instead of lxml to avoid build issues
-# Note: pytesseract + Pillow + PyMuPDF provide free OCR for scanned document images
+# Note: pytesseract + Pillow + PyMuPDF + numpy provide free OCR for scanned document images
 # PyMuPDF renders PDF pages to images without external dependencies (no poppler needed)
+# numpy enables adaptive thresholding for better OCR binarization

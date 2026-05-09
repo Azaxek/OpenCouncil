@@ -11,6 +11,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libpq-dev \
     tesseract-ocr \
     tesseract-ocr-eng \
+    tesseract-ocr-fra \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy requirements first for layer caching
