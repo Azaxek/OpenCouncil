@@ -37,6 +37,13 @@ if _env_file.exists():
 
 USE_POSTGRES = bool(os.getenv("DATABASE_URL"))
 
+# SQLite paths — always defined so we can fall back
+if os.getenv("VERCEL"):
+    DB_DIR = Path("/tmp/civic_city_hub_data")
+else:
+    DB_DIR = Path(__file__).parent / "data"
+DB_PATH = DB_DIR / "civic_city_hub.db"
+
 if USE_POSTGRES:
     import psycopg2
     import psycopg2.extras
@@ -71,24 +78,29 @@ if USE_POSTGRES:
         conn = psycopg2.connect(**kwargs)
         conn.autocommit = False
         return conn
-else:
-    # SQLite paths
-    if os.getenv("VERCEL"):
-        DB_DIR = Path("/tmp/civic_city_hub_data")
-    else:
-        DB_DIR = Path(__file__).parent / "data"
-    DB_PATH = DB_DIR / "civic_city_hub.db"
 
 
 # --- Initialization ---
 
 
 def init_db():
-    """Initialize the database schema."""
+    """Initialize the database schema.
+
+    Tries PostgreSQL first if DATABASE_URL is set, falls back to SQLite
+    on connection failure. This allows local development without a running
+    PostgreSQL instance even when DATABASE_URL is configured.
+    """
+    global USE_POSTGRES
     if USE_POSTGRES:
-        _init_pg()
-    else:
-        _init_sqlite()
+        try:
+            _init_pg()
+            return
+        except Exception as e:
+            print(f"[WARN] PostgreSQL connection failed: {e}")
+            print("[WARN] Falling back to SQLite for local development.")
+            USE_POSTGRES = False
+    # Fall back to SQLite
+    _init_sqlite()
 
 
 def _init_sqlite():

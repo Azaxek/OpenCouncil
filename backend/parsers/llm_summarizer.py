@@ -878,6 +878,23 @@ class LLMSummarizer:
                 minutes, reason=f"text quality score too low ({quality_score:.2f})"
             )
 
+        # STUB TEXT DETECTION: If the prepared text indicates this is a scanned image
+        # with no OCR-extracted content, skip the LLM entirely.
+        # Sending stub text to the LLM causes it to echo back the "not available" message
+        # as if it were a real summary, which is misleading.
+        stub_indicators = [
+            "this document is a scanned image",
+            "ocr text extraction was not available",
+            "no detailed minutes text available",
+        ]
+        minutes_text_lower = minutes_text.lower()
+        is_stub = any(indicator in minutes_text_lower for indicator in stub_indicators)
+        if is_stub:
+            print("[TEXT] Detected stub text (scanned image without OCR), skipping LLM")
+            return self._build_unreadable_response(
+                minutes, reason="scanned document image without OCR text extraction"
+            )
+
         quality_warning = ""
         if is_garbled:
             quality_warning = (
