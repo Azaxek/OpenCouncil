@@ -26,9 +26,9 @@ open-source) to extract text from the scanned images, then pass the text
 to DeepSeek for summarization.
 """
 
+import hashlib
 import json
 import re
-import uuid
 from datetime import datetime, timezone
 from typing import Optional
 from xml.etree import ElementTree as ET
@@ -269,8 +269,13 @@ class LaserficheConnector:
             title = doc["title"]
             display_title = f"City Council Meeting Minutes - {title}"
 
+            # Generate a deterministic ID from the document URL so the same
+            # document always gets the same ID across API calls.
+            doc_id_str = document_url or doc.get("entity_id", "") or doc.get("title", "")
+            stable_id = hashlib.md5(doc_id_str.encode()).hexdigest()[:8]
+
             minutes_list.append({
-                "id": str(uuid.uuid4())[:8],
+                "id": stable_id,
                 "title": display_title,
                 "meeting_date": meeting_date,
                 "url": document_url,
