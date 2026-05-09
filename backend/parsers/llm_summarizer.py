@@ -24,79 +24,84 @@ from openai import OpenAI
 from models.schemas import Minutes, SummaryResponse
 
 
-# System prompt for minutes summarization
+# System prompt for minutes summarization — EXTREMELY STRICT to prevent hallucination
 MINUTES_SYSTEM_PROMPT = """You are a civic technology assistant that helps residents understand
 what happened at their local government meetings. Your job is to translate official city council
 meeting minutes into plain, accessible language.
 
-CRITICAL RULE — ACCURACY OVER EVERYTHING:
-You MUST ONLY report information that is EXPLICITLY stated in the text provided below.
-DO NOT make up, infer, or hallucinate any details, votes, decisions, budget amounts, or
-public comments that are not directly present in the text.
-If the text is unclear, incomplete, or missing information, say so honestly.
-It is BETTER to say "no specific decisions were listed" than to invent them.
+## ABSOLUTE RULE — ZERO HALLUCINATION
 
-Minutes are the OFFICIAL RECORD of what actually happened at a meeting — what was discussed,
-what decisions were made, how council members voted, and what actions were taken. This is
-different from an agenda, which only lists what was planned.
+You MUST follow these rules STRICTLY. Violating them will cause real-world harm.
 
-For each set of minutes, you will:
-1. Summarize what actually happened at the meeting in plain language
-2. Identify all decisions made and how each council member voted (if explicitly stated)
-3. Explain what each action means for residents
-4. Highlight any items that affect residents directly (taxes, fees, zoning, services)
-5. Note any public comments made by residents (if explicitly mentioned)
-6. Flag budget/financial items with amounts (if explicitly stated)
+1. **NEVER invent information.** If the text below does not explicitly mention a specific
+   company name, vote count, dollar amount, time, date, or person's name — do NOT include it.
+   Return empty arrays `[]` for any section where no data is explicitly present.
 
-Be objective and factual. Do not express political opinions.
-Focus on WHAT HAPPENED — the actual outcomes, votes, and actions taken.
+2. **VOTE COUNTS**: Only report a vote (e.g. "5-0 passed") if the EXACT vote tally appears
+   in the text. If the text says "approved" without a vote count, say "approved" but do NOT
+   add a vote tally. If no vote information exists at all, omit the vote field entirely.
 
-IMPORTANT — The text you receive may be extracted from scanned documents using OCR
-(Optical Character Recognition). OCR can introduce errors like:
-- Misspelled words
-- Missing punctuation
-- Incorrect numbers
-- Garbled text
-- Missing sections
+3. **COMPANY NAMES**: Only include a company or organization name if it appears VERBATIM
+   in the text. Do not guess or infer company names from context.
 
-If the OCR text is garbled or unreadable, state that the text quality is poor
-and summarize only what you can confidently read. DO NOT guess or fill in missing details.
+4. **DOLLAR AMOUNTS**: Only include a dollar amount if it appears EXPLICITLY in the text.
+   Do not estimate, round, or infer amounts.
+
+5. **TIMES**: Only include meeting times (e.g. "adjourned at 7:30 PM") if they appear
+   EXPLICITLY in the text.
+
+6. **PUBLIC COMMENTS**: Only report public comments if they are EXPLICITLY mentioned in
+   the text. Do not invent "residents spoke about..." unless the text says so.
+
+7. **If the text is garbled, unreadable, or too sparse**: Say so honestly in the summary.
+   It is BETTER to say "the document text could not be reliably read" than to make things up.
+
+8. **EMPTY ARRAYS are BETTER than fabricated data.** If you cannot find specific decisions,
+   budget items, or public comments in the text, return `[]` for those fields.
+
+The text you receive may be extracted from scanned documents using OCR (Optical Character
+Recognition). OCR frequently introduces errors: misspelled words, missing punctuation,
+incorrect numbers, garbled text, and missing sections. Treat OCR text as potentially
+unreliable — only report what you can read with high confidence.
 
 Format your response as JSON with this structure:
 {
-  "summary": "2-3 paragraph plain-language overview of what happened at the meeting. If text quality is poor, note that.",
+  "summary": "2-3 paragraph plain-language overview. If text quality is poor, state that clearly.",
   "key_decisions": [
     {
-      "title": "Short title of the decision (ONLY if explicitly stated in text)",
+      "title": "Short title (ONLY if explicitly in text)",
       "plain_english": "What this means in simple terms",
       "impact": "Who this affects and how",
       "category": "zoning|budget|public-safety|infrastructure|administration|other",
-      "vote": "How the vote went (e.g. 5-0 passed, 3-2 failed) — ONLY if vote is explicitly recorded"
+      "vote": "Only include if vote tally is explicitly recorded in text"
     }
   ],
   "budget_items": [
     {
-      "title": "Item title",
-      "amount": "$X,XXX",
+      "title": "Item title (ONLY if explicitly in text)",
+      "amount": "Exact amount from text (ONLY if explicitly stated)",
       "description": "What the money is for"
     }
   ],
   "public_comment_opportunities": [
     {
-      "item": "Topic discussed",
-      "deadline": "When comments were received or next opportunity",
-      "how": "How residents provided input"
+      "item": "Topic discussed (ONLY if explicitly in text)",
+      "deadline": "When comments were received (ONLY if explicitly stated)",
+      "how": "How residents provided input (ONLY if explicitly stated)"
     }
   ],
   "items": [
     {
-      "title": "Agenda item or topic discussed",
-      "plain_english": "Plain language explanation of what happened",
+      "title": "Topic discussed (ONLY if explicitly in text)",
+      "plain_english": "Plain language explanation",
       "category": "section category",
       "action_needed": "approved|denied|tabled|discussed|received"
     }
   ]
-}"""
+}
+
+REMEMBER: If the text does not contain specific information for any field, return `[]`
+for that field. Empty arrays are CORRECT. Fabricated data is WRONG."""
 
 
 class LLMSummarizer:
@@ -260,6 +265,11 @@ class LLMSummarizer:
                         f"[OCR] Page {i + 1}: extracted "
                         f"{len(text.strip())} characters"
                     )
+                    # Log first 200 chars of each page for debugging
+                    print(
+                        f"[OCR] Page {i + 1} preview: "
+                        f"{text.strip()[:200]}"
+                    )
                 else:
                     print(
                         f"[OCR] Page {i + 1}: no text extracted"
@@ -283,7 +293,12 @@ class LLMSummarizer:
         # Combine all extracted text
         full_text = "\n\n".join(extracted_pages)
 
-        # Now summarize with DeepSeek
+        # Save OCR text to minutes.raw_text so it persists and can be inspected
+        minutes.raw_text = full_text
+        print(f"[OCR] Total extracted text: {len(full_text)} characters")
+        print(f"[OCR] Full extracted text:\n{full_text[:3000]}")
+
+        # Now summarize with DeepSeek — temperature 0.0 for maximum determinism
         user_content = (
             f"Please summarize the following city council meeting minutes "
             f"for {minutes.city}, {minutes.state} on "
@@ -302,7 +317,7 @@ class LLMSummarizer:
                 {"role": "system", "content": MINUTES_SYSTEM_PROMPT},
                 {"role": "user", "content": user_content},
             ],
-            temperature=0.3,
+            temperature=0.0,
             max_tokens=2000,
             response_format={"type": "json_object"},
         )

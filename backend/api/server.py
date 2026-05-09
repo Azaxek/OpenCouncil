@@ -427,6 +427,8 @@ async def summarize_minutes_endpoint(request: SummaryRequest):
             image_fetcher=image_fetcher,
         )
         save_minutes_summary(minutes.id, summary)
+        # Save minutes too — OCR may have populated raw_text
+        save_minutes(minutes)
         return summary
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"Summarization failed: {str(e)}")
