@@ -26,10 +26,11 @@ from openai import OpenAI
 from models.schemas import Minutes, SummaryResponse
 
 
-# System prompt for minutes summarization — EXTREMELY STRICT to prevent hallucination
+# System prompt for minutes summarization — STRICT to prevent hallucination
 # Designed to handle OCR-garbled text from scanned city council minutes
 # CRITICAL: LLMs naturally hallucinate when given sparse/garbled text.
-# This prompt is structured to aggressively prefer "nothing found" over "made up".
+# This prompt is structured to prefer "nothing found" over "made up",
+# while still extracting whatever information IS available from noisy OCR.
 MINUTES_SYSTEM_PROMPT = """You are a civic technology assistant that helps residents understand
 what happened at their local government meetings. Your job is to translate official city council
 meeting minutes into plain, accessible language.
@@ -79,29 +80,62 @@ You MUST follow these rules STRICTLY. Violating them will cause real-world harm.
     rather than decisions made), clearly state this in the summary. Do not report agenda items
     as if they were decisions that were actually made.
 
-### CRITICAL: HANDLING SPARSE OR GARBLED TEXT
+### HANDLING SPARSE OR GARBLED TEXT
 
-If the text below is very short, contains mostly UI elements (navigation, buttons, PDF controls),
-or appears to be garbled/unreadable OCR output, you MUST:
+The text below may contain OCR errors, UI elements (navigation, buttons), or be partially garbled.
+**Do NOT immediately give up on the text.** Try to extract whatever meaningful content you can find.
+If the text contains any meeting-related content (agenda items, decisions, discussions, motions,
+ordinances, resolutions, public hearings), extract that information.
 
-- Set "summary" to: "The document text could not be reliably extracted. The scanned document
-  images did not produce readable text. Please view the original document directly."
-- Return ALL arrays (key_decisions, budget_items, public_comment_opportunities, items) as
-  EMPTY arrays `[]`.
-- Do NOT try to infer meeting content from document metadata (title, date, type) alone.
-  A meeting title like "City Council Meeting Minutes - 04-13-2026" does NOT tell you what
-  decisions were made.
+Only if the text is COMPLETELY unreadable (pure garbage characters with zero recognizable words)
+should you set the summary to indicate the text could not be read.
 
-### JSON OUTPUT FORMAT
+If the text contains mostly UI elements but also some meeting content, focus on the meeting content
+and note in the summary that the text quality is degraded.
+
+### JSON OUTPUT FORMAT — STRICT STRUCTURE
+
+Each item in the arrays below MUST be a JSON object (dictionary), NOT a plain string.
+Every item MUST have a "description" field at minimum.
 
 {
-  "summary": "2-3 paragraph plain-language overview. If text quality is poor, state that clearly. If text is unreadable, say so and return empty arrays.",
-  "key_decisions": [],
-  "budget_items": [],
-  "public_comment_opportunities": [],
-  "items": []
+  "summary": "2-3 paragraph plain-language overview. If text quality is poor, state that clearly. Extract whatever information is available.",
+
+  "key_decisions": [
+    {
+      "description": "What was decided, in plain language",
+      "vote": "Optional: vote tally if explicitly stated (e.g. '5-0'). Omit this field if no vote count is present in the text.",
+      "details": "Optional: additional context about the decision"
+    }
+  ],
+
+  "budget_items": [
+    {
+      "description": "What the budget item is for",
+      "amount": "Optional: dollar amount if explicitly stated. Omit if not present.",
+      "status": "Optional: approved/denied/tabled/etc. Omit if not stated."
+    }
+  ],
+
+  "public_comment_opportunities": [
+    {
+      "description": "Description of the public comment opportunity or comments made",
+      "speaker": "Optional: name of speaker if explicitly mentioned. Omit if not present.",
+      "topic": "Optional: topic of the comment if explicitly stated. Omit if not present."
+    }
+  ],
+
+  "items": [
+    {
+      "description": "Description of the agenda item or action taken",
+      "action": "Optional: what action was taken (approved/denied/received/etc.). Omit if not stated.",
+      "details": "Optional: additional details about the item"
+    }
+  ]
 }
 
+IMPORTANT: Every item in every array MUST be a JSON object with a "description" field.
+NEVER return plain strings in arrays. If you have no information for a section, return [].
 REMEMBER: Empty arrays are CORRECT. Fabricated data is WRONG. If in doubt, return empty arrays."""
 
 
@@ -241,16 +275,21 @@ class LLMSummarizer:
         Applies:
         1. Convert to grayscale
         2. Increase contrast
-        3. Apply adaptive thresholding (binarization)
+        3. Apply sharpening filter
         4. Denoise with median filter
-        5. Deskew (straighten) the image
+        5. Binarization (Tesseract only — EasyOCR works better with grayscale)
 
-        For EasyOCR, returns the preprocessed image in RGB mode (EasyOCR needs 3-channel).
-        For Tesseract, returns the preprocessed image in grayscale (L) mode.
+        For EasyOCR, returns the preprocessed image in RGB mode (EasyOCR needs 3-channel)
+        but WITHOUT aggressive binarization — EasyOCR's deep learning model works best
+        with continuous-tone grayscale images, not harshly thresholded ones.
+
+        For Tesseract, returns the preprocessed image in grayscale (L) mode with
+        full binarization for maximum OCR accuracy.
 
         Args:
             image: PIL Image to preprocess.
-            for_easyocr: If True, returns RGB image; if False, returns grayscale.
+            for_easyocr: If True, returns RGB image without binarization;
+                        if False, returns grayscale with binarization.
 
         Returns:
             Preprocessed PIL Image.
@@ -269,23 +308,24 @@ class LLMSummarizer:
         # Apply median filter to reduce noise (salt-and-pepper from scan)
         image = image.filter(self._PIL_ImageFilter.MedianFilter(size=3))
 
-        # Binarize with threshold — use numpy if available for Otsu-like threshold
-        if self._numpy_available:
-            try:
-                img_array = self._np.array(image)
-                # Simple global threshold at 128 after contrast enhancement
-                # This works well for scanned documents with good contrast
-                threshold = 128
-                img_array = self._np.where(img_array > threshold, 255, 0).astype(self._np.uint8)
-                image = self._PIL_Image.fromarray(img_array, mode="L")
-            except Exception:
-                # Fallback to simple threshold
+        # Binarize ONLY for Tesseract — EasyOCR works better with grayscale
+        if not for_easyocr:
+            if self._numpy_available:
+                try:
+                    img_array = self._np.array(image)
+                    # Simple global threshold at 128 after contrast enhancement
+                    # This works well for scanned documents with good contrast
+                    threshold = 128
+                    img_array = self._np.where(img_array > threshold, 255, 0).astype(self._np.uint8)
+                    image = self._PIL_Image.fromarray(img_array, mode="L")
+                except Exception:
+                    # Fallback to simple threshold
+                    image = image.point(lambda x: 255 if x > 128 else 0)
+            else:
+                # Simple threshold without numpy
                 image = image.point(lambda x: 255 if x > 128 else 0)
-        else:
-            # Simple threshold without numpy
-            image = image.point(lambda x: 255 if x > 128 else 0)
 
-        # EasyOCR expects 3-channel RGB
+        # Convert to RGB if needed for EasyOCR
         if for_easyocr:
             image = image.convert("RGB")
 
@@ -310,6 +350,46 @@ class LLMSummarizer:
                 print(f"[WARN] Failed to initialize EasyOCR reader: {e}")
                 self._easyocr_available = False
         return self._easyocr_reader
+
+    @staticmethod
+    def _extract_easyocr_results(results: list) -> list[str]:
+        """Extract text from EasyOCR results, handling multiple return formats.
+
+        EasyOCR's readtext() can return different formats depending on version
+        and whether paragraph=True is used:
+        - Format A (default): [(bbox, text, confidence), ...]
+        - Format B (paragraph=True in some versions): [(text, confidence), ...]
+        - Format C: [text, ...]  (rare, edge case)
+
+        Args:
+            results: Raw results from reader.readtext()
+
+        Returns:
+            List of extracted text strings, filtered by confidence > 0.3 when available.
+        """
+        lines = []
+        for result in results:
+            try:
+                if isinstance(result, str):
+                    # Format C: just a string
+                    lines.append(result.strip())
+                elif isinstance(result, (list, tuple)):
+                    if len(result) == 3:
+                        # Format A: (bbox, text, confidence)
+                        text, confidence = result[1], result[2]
+                        if confidence > 0.3:
+                            lines.append(text.strip())
+                    elif len(result) == 2:
+                        # Format B: (text, confidence) — paragraph mode
+                        text, confidence = result
+                        if confidence > 0.3:
+                            lines.append(text.strip())
+                    elif len(result) == 1:
+                        # Edge case: (text,) — no confidence
+                        lines.append(str(result[0]).strip())
+            except Exception:
+                continue
+        return lines
 
     def _ocr_with_easyocr(self, image_bytes: bytes) -> str:
         """Run EasyOCR on a single page image with preprocessing.
@@ -341,15 +421,14 @@ class LLMSummarizer:
             # EasyOCR expects a numpy array (H, W, 3) in RGB format
             img_array = self._np.array(processed)
 
-            # Run EasyOCR
-            results = reader.readtext(img_array, paragraph=True)
-
-            # Combine results into text
-            # Each result is a tuple: (bbox, text, confidence)
-            lines = []
-            for bbox, text, confidence in results:
-                if confidence > 0.3:  # Filter low-confidence detections
-                    lines.append(text.strip())
+            # Run EasyOCR — try paragraph mode first, fall back to non-paragraph
+            try:
+                results = reader.readtext(img_array, paragraph=True)
+                lines = self._extract_easyocr_results(results)
+            except Exception:
+                # Fallback: try without paragraph mode
+                results = reader.readtext(img_array, paragraph=False)
+                lines = self._extract_easyocr_results(results)
 
             easyocr_text = "\n".join(lines)
 
@@ -360,11 +439,12 @@ class LLMSummarizer:
                 if raw_image.mode != "RGB":
                     raw_image = raw_image.convert("RGB")
                 raw_array = self._np.array(raw_image)
-                raw_results = reader.readtext(raw_array, paragraph=True)
-                raw_lines = []
-                for bbox, text, confidence in raw_results:
-                    if confidence > 0.3:
-                        raw_lines.append(text.strip())
+                try:
+                    raw_results = reader.readtext(raw_array, paragraph=True)
+                    raw_lines = self._extract_easyocr_results(raw_results)
+                except Exception:
+                    raw_results = reader.readtext(raw_array, paragraph=False)
+                    raw_lines = self._extract_easyocr_results(raw_results)
                 raw_text = "\n".join(raw_lines)
                 if len(raw_text.strip()) > len(easyocr_text.strip()):
                     print(f"[EASYOCR] Raw image produced more text ({len(raw_text.strip())} chars) than preprocessed ({len(easyocr_text.strip())} chars)")
@@ -736,17 +816,29 @@ class LLMSummarizer:
 
         result = json.loads(response.choices[0].message.content)
 
+        # Guard: ensure all list fields contain dicts, not strings
+        # The LLM sometimes returns plain strings instead of {"description": "..."} objects
+        def _ensure_dict_list(items: list) -> list[dict]:
+            """Convert string items to dicts if needed."""
+            cleaned = []
+            for item in items:
+                if isinstance(item, str):
+                    cleaned.append({"description": item})
+                elif isinstance(item, dict):
+                    cleaned.append(item)
+            return cleaned
+
         return SummaryResponse(
             minutes_id=minutes.id,
             meeting_date=minutes.meeting_date,
             meeting_type=minutes.meeting_type,
             summary=result.get("summary", "No summary available."),
-            key_decisions=result.get("key_decisions", []),
-            budget_items=result.get("budget_items", []),
-            public_comment_opportunities=result.get(
-                "public_comment_opportunities", []
+            key_decisions=_ensure_dict_list(result.get("key_decisions", [])),
+            budget_items=_ensure_dict_list(result.get("budget_items", [])),
+            public_comment_opportunities=_ensure_dict_list(
+                result.get("public_comment_opportunities", [])
             ),
-            items=result.get("items", []),
+            items=_ensure_dict_list(result.get("items", [])),
         )
 
     async def _summarize_with_text(
@@ -800,17 +892,28 @@ class LLMSummarizer:
 
         result = json.loads(response.choices[0].message.content)
 
+        # Guard: ensure all list fields contain dicts, not strings
+        def _ensure_dict_list(items: list) -> list[dict]:
+            """Convert string items to dicts if needed."""
+            cleaned = []
+            for item in items:
+                if isinstance(item, str):
+                    cleaned.append({"description": item})
+                elif isinstance(item, dict):
+                    cleaned.append(item)
+            return cleaned
+
         return SummaryResponse(
             minutes_id=minutes.id,
             meeting_date=minutes.meeting_date,
             meeting_type=minutes.meeting_type,
             summary=result.get("summary", "No summary available."),
-            key_decisions=result.get("key_decisions", []),
-            budget_items=result.get("budget_items", []),
-            public_comment_opportunities=result.get(
-                "public_comment_opportunities", []
+            key_decisions=_ensure_dict_list(result.get("key_decisions", [])),
+            budget_items=_ensure_dict_list(result.get("budget_items", [])),
+            public_comment_opportunities=_ensure_dict_list(
+                result.get("public_comment_opportunities", [])
             ),
-            items=result.get("items", []),
+            items=_ensure_dict_list(result.get("items", [])),
         )
 
     def _prepare_minutes_text(self, minutes: Minutes) -> str:

@@ -58,10 +58,11 @@ class LaserficheConnector:
         self.city = city
         self.state = state
         self.base_url = LASERFICHE_BASE
+        self._session_established = False
         self.client = httpx.AsyncClient(
             timeout=30.0,
             follow_redirects=True,
-            cookies={},
+            verify=False,  # Bypass SSL verification for Laserfiche server
             headers={
                 "User-Agent": (
                     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -75,6 +76,84 @@ class LaserficheConnector:
 
     async def close(self):
         await self.client.aclose()
+
+    async def _make_request(
+        self,
+        method: str,
+        url: str,
+        **kwargs,
+    ):
+        """Make an HTTP request using httpx's built-in cookie handling.
+
+        httpx.AsyncClient automatically manages cookies via its cookie jar,
+        which is critical for Laserfiche's ASP.NET session management.
+        We avoid manually setting Cookie headers to prevent conflicts.
+        """
+        response = await self.client.request(method, url, **kwargs)
+        return response
+
+    async def _establish_session(self) -> bool:
+        """Establish a Laserfiche ASP.NET session by visiting Welcome.aspx.
+
+        Laserfiche requires ASP.NET session cookies (ASP.NET_SessionId,
+        lastSessionAccess, AcceptsCookies, MachineTag) for all image
+        download requests. The server redirects to CookieCheck.aspx which
+        sets these cookies.
+
+        Uses httpx's built-in cookie jar to automatically track cookies
+        across redirects, avoiding manual cookie management conflicts.
+
+        Returns True if session was established successfully.
+        """
+        if self._session_established:
+            return True
+
+        try:
+            print("[COOKIE] Establishing Laserfiche session...")
+
+            # Visit Welcome.aspx with follow_redirects=True so httpx's
+            # built-in cookie jar automatically captures Set-Cookie headers
+            # from the CookieCheck.aspx -> Welcome.aspx redirect chain.
+            response = await self.client.get(
+                f"{self.base_url}/Welcome.aspx",
+                follow_redirects=True,
+                timeout=30.0,
+            )
+            response.raise_for_status()
+
+            # Check if we got ASP.NET_SessionId in httpx's cookie jar
+            cookies = dict(self.client.cookies)
+            has_session = "ASP.NET_SessionId" in cookies
+            has_accepts = "AcceptsCookies" in cookies
+
+            if has_session:
+                self._session_established = True
+                print(f"[COOKIE] Session established: {cookies}")
+                return True
+            else:
+                print(f"[COOKIE] No ASP.NET_SessionId yet. Cookies so far: {cookies}")
+                print("[COOKIE] Trying CookieCheck.aspx directly...")
+                cookie_check_url = f"{self.base_url}/CookieCheck.aspx?redirect=%2fweblink%2fWelcome.aspx"
+                response = await self.client.get(
+                    cookie_check_url,
+                    follow_redirects=True,
+                    timeout=30.0,
+                )
+                response.raise_for_status()
+
+                cookies = dict(self.client.cookies)
+                has_session = "ASP.NET_SessionId" in cookies
+                if has_session:
+                    self._session_established = True
+                    print(f"[COOKIE] Session established via CookieCheck: {cookies}")
+                    return True
+                else:
+                    print(f"[COOKIE] Still no ASP.NET_SessionId. Cookies: {cookies}")
+                    return False
+
+        except Exception as e:
+            print(f"[COOKIE] Session establishment failed: {e}")
+            return False
 
     def _rss_url(self, folder_id: str) -> str:
         """Build the RSS feed URL for a given folder."""
@@ -312,7 +391,10 @@ class LaserficheConnector:
             return None
 
         try:
-            response = await self.client.get(document_url)
+            # Establish session cookies first
+            await self._establish_session()
+
+            response = await self._make_request("GET", document_url)
             response.raise_for_status()
 
             html = response.text
@@ -351,7 +433,10 @@ class LaserficheConnector:
             return []
 
         try:
-            response = await self.client.get(document_url)
+            # Establish session cookies first
+            await self._establish_session()
+
+            response = await self._make_request("GET", document_url)
             response.raise_for_status()
             return self._extract_page_image_urls(
                 response.text, document_url
@@ -367,16 +452,17 @@ class LaserficheConnector:
     ) -> list[bytes]:
         """Download actual page images from Laserfiche.
 
-        Primary strategy (PDF generation):
-        1. Visit docview.aspx to establish session cookies
-        2. Extract ASP.NET __VIEWSTATE and __EVENTVALIDATION tokens from the HTML
-        3. POST to GeneratePDF.aspx with ViewState tokens to generate a PDF
-        4. Use PyMuPDF (fitz) to render each PDF page to a PIL Image
+        Primary strategy (PageImageData.aspx):
+        1. Visit root URL to establish session cookies (CookieCheck.aspx)
+        2. Visit docview.aspx to extract docInfo JSON (PageIds, Repository, etc.)
+        3. Use PageImageData.aspx with correct parameters (from DocViewer8 JS analysis)
+           to download each page as a full-resolution PNG image.
 
-        Fallback strategy (direct page download):
-        If PDF generation fails (e.g. on HF Spaces where the Laserfiche
-        server may block the request), try downloading each page URL
-        directly and extracting the embedded image.
+        Fallback strategies:
+        - PDF generation via GeneratePDF.aspx
+        - Direct page download and embedded image extraction
+        - GetImage.aspx with PageIds from docInfo JSON
+        - ThumbnailImageDefsData.aspx for thumbnail images
 
         Returns image bytes for OCR processing.
         """
@@ -393,120 +479,61 @@ class LaserficheConnector:
             print("[WARN] Could not extract docId from document URL")
             return []
 
-        # Step 1: Visit docview.aspx to establish session cookies
-        # and extract ASP.NET ViewState tokens needed for GeneratePDF POST
-        viewstate = None
-        eventvalidation = None
+        # Step 0: Establish Laserfiche ASP.NET session cookies
+        await self._establish_session()
+
+        # Step 1: Visit docview.aspx to extract docInfo JSON
         docview_html = None
         try:
-            docview_response = await self.client.get(
+            docview_response = await self._make_request(
+                "GET",
                 document_url,
-                headers={
-                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-                    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-                    "Accept-Language": "en-US,en;q=0.5",
-                },
                 timeout=30.0,
             )
             docview_response.raise_for_status()
             docview_html = docview_response.text
-
-            # Extract __VIEWSTATE from the docview.aspx HTML
-            vs_match = re.search(
-                r'<input[^>]*name="__VIEWSTATE"[^>]*value="([^"]*)"',
-                docview_html,
-            )
-            if vs_match:
-                viewstate = vs_match.group(1)
-                print(f"[PDF] Extracted __VIEWSTATE ({len(viewstate)} chars)")
-
-            # Extract __EVENTVALIDATION from the docview.aspx HTML
-            ev_match = re.search(
-                r'<input[^>]*name="__EVENTVALIDATION"[^>]*value="([^"]*)"',
-                docview_html,
-            )
-            if ev_match:
-                eventvalidation = ev_match.group(1)
-                print(f"[PDF] Extracted __EVENTVALIDATION ({len(eventvalidation)} chars)")
-
         except Exception as e:
             print(f"[WARN] Error accessing document viewer: {e}")
-            # Continue anyway — cookies might not be needed for GeneratePDF
 
-        # Step 2: POST to GeneratePDF.aspx to get a PDF
-        gen_url = f"{self.base_url}/GeneratePDF.aspx"
-        pdf_bytes = None
-        try:
-            # Build POST data with ViewState tokens if available
-            post_data: dict[str, str] = {
-                "id": doc_id,
-                "dbid": DBID,
-                "pageFrom": "1",
-                "pageTo": "999",  # Request all pages
-            }
-            if viewstate:
-                post_data["__VIEWSTATE"] = viewstate
-            if eventvalidation:
-                post_data["__EVENTVALIDATION"] = eventvalidation
-
-            pdf_response = await self.client.post(
-                gen_url,
-                data=post_data,
-                headers={
-                    "Content-Type": "application/x-www-form-urlencoded",
-                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-                    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-                    "Accept-Language": "en-US,en;q=0.5",
-                    "Referer": document_url,
-                },
-                timeout=60.0,  # PDF generation can be slow
-            )
-            pdf_response.raise_for_status()
-
-            content_type = pdf_response.headers.get("content-type", "")
-            pdf_bytes = pdf_response.content
-
-            if not pdf_bytes or len(pdf_bytes) < 100:
-                print(f"[WARN] GeneratePDF returned empty or too small response ({len(pdf_bytes)} bytes)")
-                pdf_bytes = None
-            elif self._is_error_response(pdf_bytes):
-                print(f"[WARN] GeneratePDF returned error page instead of PDF ({len(pdf_bytes)} bytes, Content-Type: {content_type})")
-                pdf_bytes = None
-            else:
-                print(f"[PDF] Generated PDF: {len(pdf_bytes)} bytes, Content-Type: {content_type}")
-
-        except Exception as e:
-            print(f"[WARN] GeneratePDF POST failed: {e}")
-            pdf_bytes = None
-
-        # Step 3: If we got a valid PDF, render it to images
-        if pdf_bytes:
-            images = self._render_pdf_to_images(pdf_bytes)
+        # Step 2: Try PageImageData.aspx (primary strategy)
+        # This endpoint is used by the DocViewer8 JavaScript's GetThumbImageUrl_Visible
+        # and returns full-page PNG images when called with the correct parameters.
+        if docview_html:
+            images = await self._fetch_via_pageimagedata(doc_id, docview_html)
             if images:
                 return images
-            print("[WARN] PDF rendering returned no images, trying fallback...")
+
+        # Step 3: Try PDF generation as fallback
+        images = await self._fetch_via_generatepdf(doc_id, document_url, docview_html)
+        if images:
+            return images
 
         # Step 4: Fallback — download individual page images directly
-        # This handles cases where GeneratePDF.aspx is blocked (e.g. HF Spaces)
         print("[FALLBACK] Trying direct page image download...")
-        return await self._fetch_page_images_fallback(doc_id, page_urls, docview_html)
+        images = await self._fetch_page_images_fallback(doc_id, page_urls, docview_html)
+        if images:
+            return images
+
+        # Step 5: Try thumbnail-based image extraction
+        print("[FALLBACK] Trying thumbnail-based image extraction...")
+        return await self._fetch_via_thumbnail(doc_id, docview_html)
 
     def _is_error_response(self, content: bytes) -> bool:
         """Check if the response content is an error page rather than a valid PDF.
 
         Detects:
-        - HTML pages (<html, <!DOCTYPE)
         - ASP.NET error pages (JavaScript alerts, "Object reference" errors)
         - XML error responses
+        - Login pages (LoginSquare CSS class)
+
+        NOTE: HTML pages from GeneratePDF.aspx that contain the ThePDFInitiator
+        span are NOT errors — they are valid PDF generator pages with JavaScript.
         """
         if not content:
             return True
 
-        head = content[:500].lower()
-
-        # Check for HTML tags
-        if b"<html" in head or b"<!DOCTYPE" in head:
-            return True
+        content_lower = content.lower()
+        head = content_lower[:500]
 
         # Check for ASP.NET error patterns
         error_patterns = [
@@ -516,22 +543,32 @@ class LaserficheConnector:
             b"error has occurred",
             b"could not complete your request",
             b"the system has encountered an error",
-            b"alert(",
             b"stack trace:",
         ]
         for pattern in error_patterns:
             if pattern in head:
                 return True
 
+        # Check for login page (GetImage.aspx returns login page when not authenticated)
+        if b"loginsquare" in head or b"WatermarkLogin" in head:
+            return True
+
         # Check for XML with error indicators
         if b"<?xml" in head:
             # XML responses from GeneratePDF are usually errors
             # A valid PDF starts with %PDF
-            if b"<html" in content[:2000].lower() or b"error" in content[:2000].lower():
+            if b"<html" in content_lower[:2000] or b"error" in content_lower[:2000]:
                 return True
 
         # Check if it starts with PDF magic bytes
         if content[:4] == b"%PDF":
+            return False
+
+        # If it contains ThePDFInitiator span, it's a valid PDF generator page
+        # NOTE: Search the FULL content (lowercased), not just head, because
+        # ThePDFInitiator may be beyond the first 500 bytes (e.g., at bytes 500-616
+        # of a 616-byte response). Use lowercase patterns since content_lower is lowercased.
+        if b"thepdfinitiator" in content_lower or b"pdftransition" in content_lower:
             return False
 
         # If it doesn't start with PDF magic bytes and isn't clearly an error,
@@ -593,13 +630,9 @@ class LaserficheConnector:
             for i, page_url in enumerate(page_urls):
                 try:
                     print(f"[FALLBACK] Downloading page {i + 1}: {page_url}")
-                    response = await self.client.get(
+                    response = await self._make_request(
+                        "GET",
                         page_url,
-                        headers={
-                            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-                            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-                            "Accept-Language": "en-US,en;q=0.5",
-                        },
                         timeout=30.0,
                     )
                     response.raise_for_status()
@@ -664,15 +697,10 @@ class LaserficheConnector:
         if ev_match:
             eventvalidation = ev_match.group(1)
 
-        # Try to extract docInfo JSON from the HTML
-        doc_info_match = re.search(
-            r'var\s+docInfo\s*=\s*(\{.*?"PageIds"\s*:\s*\[.*?\]\s*.*?\});',
-            html,
-            re.DOTALL,
-        )
-        if doc_info_match:
+        # Try to extract docInfo JSON from the HTML using shared helper
+        doc_info = self._extract_doc_info(html)
+        if doc_info:
             try:
-                doc_info = json.loads(doc_info_match.group(1))
                 page_ids = doc_info.get("PageIds", [])
                 dbid = doc_info.get("DBID", DBID)
                 doc_id_from_info = str(doc_info.get("Id", doc_id))
@@ -681,17 +709,17 @@ class LaserficheConnector:
                 if len(page_ids) > page_num:
                     page_id = page_ids[page_num]
                     if page_id and page_id > 0:
-                        # Try GetImage.aspx with the page ID
+                        # Try GetImage.aspx with the page ID (GET)
                         img_url = (
                             f"{self.base_url}/GetImage.aspx"
                             f"?pageid={page_id}&dbid={dbid}&docid={doc_id_from_info}"
                         )
                         print(f"[FALLBACK] Trying GetImage.aspx: {img_url}")
                         try:
-                            img_response = await self.client.get(
+                            img_response = await self._make_request(
+                                "GET",
                                 img_url,
                                 headers={
-                                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
                                     "Accept": "image/avif,image/webp,image/apng,image/*,*/*;q=0.8",
                                     "Accept-Language": "en-US,en;q=0.5",
                                     "Referer": f"{self.base_url}/docview.aspx?id={doc_id_from_info}&dbid={dbid}",
@@ -707,7 +735,35 @@ class LaserficheConnector:
                                 # Might be an image with wrong content-type
                                 return self._convert_to_png_bytes(img_content)
                         except Exception as e:
-                            print(f"[FALLBACK] GetImage.aspx failed: {e}")
+                            print(f"[FALLBACK] GetImage.aspx GET failed: {e}")
+
+                        # Try GetImage.aspx with POST (some versions require POST)
+                        try:
+                            post_data = {
+                                "pageid": str(page_id),
+                                "dbid": dbid,
+                                "docid": doc_id_from_info,
+                            }
+                            if viewstate:
+                                post_data["__VIEWSTATE"] = viewstate
+
+                            gi_response = await self._make_request(
+                                "POST",
+                                f"{self.base_url}/GetImage.aspx",
+                                data=post_data,
+                                headers={
+                                    "Content-Type": "application/x-www-form-urlencoded",
+                                    "Accept": "image/avif,image/webp,image/apng,image/*,*/*;q=0.8",
+                                    "Referer": f"{self.base_url}/docview.aspx?id={doc_id_from_info}&dbid={dbid}",
+                                },
+                                timeout=30.0,
+                            )
+                            gi_response.raise_for_status()
+                            gi_content = gi_response.content
+                            if len(gi_content) > 1000 and not self._is_error_response(gi_content):
+                                return self._convert_to_png_bytes(gi_content)
+                        except Exception as e:
+                            print(f"[FALLBACK] GetImage.aspx POST failed: {e}")
 
                         # Also try with format parameter
                         for fmt in ["png", "tiff", "jpeg"]:
@@ -717,10 +773,10 @@ class LaserficheConnector:
                                     f"?pageid={page_id}&dbid={dbid}&docid={doc_id_from_info}"
                                     f"&format={fmt}"
                                 )
-                                img_response = await self.client.get(
+                                img_response = await self._make_request(
+                                    "GET",
                                     img_url_fmt,
                                     headers={
-                                        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
                                         "Accept": "image/avif,image/webp,image/apng,image/*,*/*;q=0.8",
                                         "Referer": f"{self.base_url}/docview.aspx?id={doc_id_from_info}&dbid={dbid}",
                                     },
@@ -741,7 +797,7 @@ class LaserficheConnector:
         """Last resort: try to get page images via GetImage.aspx.
 
         Uses the docInfo JSON from the docview.aspx page to get PageIds,
-        then tries GetImage.aspx with each page ID.
+        then tries GetImage.aspx with each page ID via GET and POST.
 
         Args:
             doc_id: The Laserfiche document ID.
@@ -756,12 +812,9 @@ class LaserficheConnector:
         # Fetch docview.aspx if we don't already have the HTML
         if not html:
             try:
-                response = await self.client.get(
+                response = await self._make_request(
+                    "GET",
                     docview_url,
-                    headers={
-                        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-                        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-                    },
                     timeout=30.0,
                 )
                 response.raise_for_status()
@@ -770,71 +823,601 @@ class LaserficheConnector:
                 print(f"[FALLBACK] Failed to get docInfo from docview.aspx: {e}")
                 return images
 
-        # Extract docInfo JSON
-        try:
-            doc_info_match = re.search(
-                r'var\s+docInfo\s*=\s*(\{.*?"PageIds"\s*:\s*\[.*?\]\s*.*?\});',
-                html,
-                re.DOTALL,
-            )
-            if doc_info_match:
-                doc_info = json.loads(doc_info_match.group(1))
-                page_ids = doc_info.get("PageIds", [])
-                dbid = doc_info.get("DBID", DBID)
-                doc_id_from_info = str(doc_info.get("Id", doc_id))
+        # Extract docInfo JSON using the shared helper
+        doc_info = self._extract_doc_info(html)
+        if not doc_info:
+            print("[FALLBACK] No docInfo found in docview.aspx HTML")
+            return images
 
-                print(f"[FALLBACK] Got docInfo: {len(page_ids) - 1} pages, PageIds={page_ids}")
+        page_ids = doc_info.get("PageIds", [])
+        dbid = doc_info.get("DBID", DBID)
+        doc_id_from_info = str(doc_info.get("Id", doc_id))
 
-                # Try each page ID with GetImage.aspx
-                for page_num in range(1, len(page_ids)):
-                    page_id = page_ids[page_num]
-                    if page_id and page_id > 0:
-                        img_url = (
-                            f"{self.base_url}/GetImage.aspx"
-                            f"?pageid={page_id}&dbid={dbid}&docid={doc_id_from_info}"
-                        )
+        print(f"[FALLBACK] Got docInfo: {len(page_ids) - 1} pages, PageIds={page_ids}")
+
+        # Extract __VIEWSTATE for POST requests
+        viewstate = None
+        vs_match = re.search(
+            r'<input[^>]*name="__VIEWSTATE"[^>]*value="([^"]*)"',
+            html,
+        )
+        if vs_match:
+            viewstate = vs_match.group(1)
+
+        # Try each page ID with GetImage.aspx (GET first, then POST)
+        for page_num in range(1, len(page_ids)):
+            page_id = page_ids[page_num]
+            if page_id and page_id > 0:
+                # Try GET
+                img_url = (
+                    f"{self.base_url}/GetImage.aspx"
+                    f"?pageid={page_id}&dbid={dbid}&docid={doc_id_from_info}"
+                )
+                try:
+                    img_response = await self._make_request(
+                        "GET",
+                        img_url,
+                        headers={
+                            "Accept": "image/avif,image/webp,image/apng,image/*,*/*;q=0.8",
+                            "Referer": docview_url,
+                        },
+                        timeout=30.0,
+                    )
+                    img_response.raise_for_status()
+                    img_content = img_response.content
+                    content_type = img_response.headers.get("content-type", "")
+
+                    if content_type.startswith("image/") and len(img_content) > 1000:
+                        img_bytes = self._convert_to_png_bytes(img_content)
+                        if img_bytes:
+                            images.append(img_bytes)
+                            print(f"[FALLBACK] GetImage.aspx GET page {page_num}: Got image ({len(img_bytes)} bytes)")
+                            continue
+
+                    # Check if it's an error page
+                    if self._is_error_response(img_content):
+                        print(f"[FALLBACK] GetImage.aspx GET page {page_num}: Got error page ({len(img_content)} bytes, {content_type})")
+                        # DEBUG: Log first 500 chars of error response
                         try:
-                            img_response = await self.client.get(
-                                img_url,
-                                headers={
-                                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-                                    "Accept": "image/avif,image/webp,image/apng,image/*,*/*;q=0.8",
-                                    "Referer": docview_url,
-                                },
-                                timeout=30.0,
-                            )
-                            img_response.raise_for_status()
-                            img_content = img_response.content
-                            content_type = img_response.headers.get("content-type", "")
+                            error_text = img_content.decode('utf-8', errors='replace')[:500]
+                            print(f"[DEBUG] GetImage.aspx GET error content: {error_text}")
+                        except Exception:
+                            pass
+                    else:
+                        # Try to convert anyway
+                        img_bytes = self._convert_to_png_bytes(img_content)
+                        if img_bytes:
+                            images.append(img_bytes)
+                            print(f"[FALLBACK] GetImage.aspx GET page {page_num}: Got image ({len(img_bytes)} bytes)")
+                            continue
 
-                            if content_type.startswith("image/") and len(img_content) > 1000:
-                                img_bytes = self._convert_to_png_bytes(img_content)
-                                if img_bytes:
-                                    images.append(img_bytes)
-                                    print(f"[FALLBACK] GetImage.aspx page {page_num}: Got image ({len(img_bytes)} bytes)")
-                                    continue
+                except Exception as e:
+                    print(f"[FALLBACK] GetImage.aspx GET page {page_num}: Failed: {e}")
 
-                            # Check if it's an error page
-                            if self._is_error_response(img_content):
-                                print(f"[FALLBACK] GetImage.aspx page {page_num}: Got error page ({len(img_content)} bytes, {content_type})")
-                            else:
-                                # Try to convert anyway
-                                img_bytes = self._convert_to_png_bytes(img_content)
-                                if img_bytes:
-                                    images.append(img_bytes)
-                                    print(f"[FALLBACK] GetImage.aspx page {page_num}: Got image ({len(img_bytes)} bytes)")
+                # Try POST as fallback (some Laserfiche versions require POST)
+                try:
+                    post_data = {
+                        "pageid": str(page_id),
+                        "dbid": dbid,
+                        "docid": doc_id_from_info,
+                    }
+                    if viewstate:
+                        post_data["__VIEWSTATE"] = viewstate
 
-                        except Exception as e:
-                            print(f"[FALLBACK] GetImage.aspx page {page_num}: Failed: {e}")
+                    gi_response = await self._make_request(
+                        "POST",
+                        f"{self.base_url}/GetImage.aspx",
+                        data=post_data,
+                        headers={
+                            "Content-Type": "application/x-www-form-urlencoded",
+                            "Accept": "image/avif,image/webp,image/apng,image/*,*/*;q=0.8",
+                            "Referer": docview_url,
+                        },
+                        timeout=30.0,
+                    )
+                    gi_response.raise_for_status()
+                    gi_content = gi_response.content
+                    content_type = gi_response.headers.get("content-type", "")
 
-        except (json.JSONDecodeError, KeyError, IndexError) as e:
-            print(f"[FALLBACK] Failed to parse docInfo JSON: {e}")
+                    if len(gi_content) > 1000 and not self._is_error_response(gi_content):
+                        img_bytes = self._convert_to_png_bytes(gi_content)
+                        if img_bytes:
+                            images.append(img_bytes)
+                            print(f"[FALLBACK] GetImage.aspx POST page {page_num}: Got image ({len(img_bytes)} bytes, {content_type})")
+                    else:
+                        # DEBUG: Log first 500 chars of POST error response
+                        try:
+                            error_text = gi_content.decode('utf-8', errors='replace')[:500]
+                            print(f"[DEBUG] GetImage.aspx POST error content: {error_text}")
+                        except Exception:
+                            pass
+                except Exception as e:
+                    print(f"[FALLBACK] GetImage.aspx POST page {page_num}: Failed: {e}")
+
+        if images:
+            return images
+
+        # Strategy 3: Try WebResource.axd URLs from the docview.aspx HTML
+        # The DocViewer8 JavaScript uses WebResource.axd for image tiles.
+        # These URLs have encrypted 'd' parameters and timestamps.
+        if html:
+            wr_matches = re.findall(
+                r'/WebLink/WebResource\.axd\?d=[a-zA-Z0-9_-]+&t=\d+',
+                html
+            )
+            # Deduplicate
+            seen = set()
+            unique_wr = []
+            for url in wr_matches:
+                if url not in seen:
+                    seen.add(url)
+                    unique_wr.append(url)
+            
+            if unique_wr:
+                print(f"[FALLBACK] Found {len(unique_wr)} WebResource.axd URLs, trying as images...")
+                for wr_url in unique_wr[:4]:  # Try first 4 (one per page)
+                    try:
+                        full_url = f"https://documents.paristexas.gov{wr_url}"
+                        wr_response = await self._make_request(
+                            "GET", full_url,
+                            headers={
+                                "Accept": "image/avif,image/webp,image/apng,image/*,*/*;q=0.8",
+                                "Referer": docview_url,
+                            },
+                            timeout=30.0,
+                        )
+                        wr_response.raise_for_status()
+                        wr_content = wr_response.content
+                        content_type = wr_response.headers.get("content-type", "")
+                        
+                        if content_type.startswith("image/") and len(wr_content) > 500:
+                            img_bytes = self._convert_to_png_bytes(wr_content)
+                            if img_bytes:
+                                images.append(img_bytes)
+                                print(f"[FALLBACK] WebResource.axd: Got image ({len(img_bytes)} bytes, {content_type})")
+                        else:
+                            print(f"[FALLBACK] WebResource.axd: Not an image ({len(wr_content)} bytes, {content_type})")
+                    except Exception as e:
+                        print(f"[FALLBACK] WebResource.axd failed: {e}")
 
         if images:
             return images
 
         print("[FALLBACK] All GetImage.aspx attempts failed")
         return images
+
+    async def _fetch_via_pageimagedata(self, doc_id: str, docview_html: str) -> list[bytes]:
+        """Download page images via PageImageData.aspx using DocViewer8 parameters.
+
+        Based on analysis of the DocViewer8 JavaScript's GetThumbImageUrl_Visible function:
+          PageImageData.aspx?scale={scale}&dID={docid}&pageNum={pageNum}&ann={0|1}
+                          &r={randomID}&search={searchID}&ro={rotation}&forceGen=1
+
+        This is the primary image retrieval endpoint used by the Laserfiche DocViewer8
+        web interface. It returns full-page PNG images at the requested scale.
+
+        Args:
+            doc_id: The Laserfiche document ID.
+            docview_html: The HTML of the docview.aspx page containing docInfo JSON.
+
+        Returns:
+            A list of PNG image bytes, one per page.
+        """
+        images: list[bytes] = []
+
+        # Extract docInfo JSON from the HTML
+        doc_info = self._extract_doc_info(docview_html)
+        if not doc_info:
+            print("[PageImageData] No docInfo found in docview.aspx HTML")
+            return images
+
+        page_ids = doc_info.get("PageIds", [])
+        num_pages = doc_info.get("NumPages", 0)
+        page_rotations = doc_info.get("PageRotations", [])
+
+        if not page_ids or num_pages == 0:
+            print("[PageImageData] No pages found in docInfo")
+            return images
+
+        print(f"[PageImageData] Found {num_pages} pages, PageIds={page_ids}")
+
+        # Use a high scale value for full-resolution images
+        # The DocViewer8 JS uses scale=10000 for 100% (100 * 100)
+        scale = 10000
+
+        for page_num in range(1, len(page_ids)):
+            pid = page_ids[page_num]
+            if not pid or pid <= 0:
+                continue
+
+            # Get rotation for this page (default to 0)
+            rotation = page_rotations[page_num] if len(page_rotations) > page_num else 0
+
+            # Build URL with parameters matching DocViewer8 JS
+            url = f"{self.base_url}/PageImageData.aspx"
+            params = {
+                "scale": str(scale),
+                "dID": doc_id,
+                "pageNum": str(page_num),
+                "ann": "0",
+                "r": "civic-city-hub",  # Random ID for cache busting
+                "search": "",
+                "ro": str(rotation),
+                "forceGen": "1",
+            }
+
+            try:
+                response = await self._make_request(
+                    "GET",
+                    url,
+                    params=params,
+                    headers={
+                        "Accept": "image/avif,image/webp,image/apng,image/*,*/*;q=0.8",
+                        "Referer": f"{self.base_url}/docview.aspx?id={doc_id}&dbid={DBID}",
+                    },
+                    timeout=30.0,
+                )
+                response.raise_for_status()
+
+                content = response.content
+                content_type = response.headers.get("content-type", "")
+
+                if content_type.startswith("image/") and len(content) > 1000:
+                    img_bytes = self._convert_to_png_bytes(content)
+                    if img_bytes:
+                        images.append(img_bytes)
+                        print(f"[PageImageData] Page {page_num}: Got image ({len(img_bytes)} bytes, {content_type})")
+                        continue
+
+                # If not a valid image, log and try next page
+                print(f"[PageImageData] Page {page_num}: Unexpected response ({len(content)} bytes, {content_type})")
+
+            except Exception as e:
+                print(f"[PageImageData] Page {page_num}: Failed: {e}")
+                continue
+
+        if images:
+            print(f"[PageImageData] Successfully downloaded {len(images)}/{num_pages} pages")
+        else:
+            print("[PageImageData] No images could be downloaded")
+
+        return images
+
+    async def _fetch_via_generatepdf(
+        self, doc_id: str, document_url: str, docview_html: Optional[str] = None
+    ) -> list[bytes]:
+        """Fallback: generate a PDF via GeneratePDF.aspx and render to images.
+
+        Args:
+            doc_id: The Laserfiche document ID.
+            document_url: The full docview.aspx URL.
+            docview_html: Previously fetched docview.aspx HTML to avoid redundant requests.
+
+        Returns:
+            A list of PNG image bytes, or empty list if PDF generation failed.
+        """
+        viewstate = None
+        viewstategenerator = None
+        eventvalidation = None
+
+        # Extract ASP.NET ViewState tokens from docview.aspx HTML
+        if docview_html:
+            vs_match = re.search(
+                r'<input[^>]*name="__VIEWSTATE"[^>]*value="([^"]*)"',
+                docview_html,
+            )
+            if vs_match:
+                viewstate = vs_match.group(1)
+                print(f"[PDF] Extracted __VIEWSTATE ({len(viewstate)} chars)")
+
+            vsg_match = re.search(
+                r'<input[^>]*name="__VIEWSTATEGENERATOR"[^>]*value="([^"]*)"',
+                docview_html,
+            )
+            if vsg_match:
+                viewstategenerator = vsg_match.group(1)
+                print(f"[PDF] Extracted __VIEWSTATEGENERATOR ({viewstategenerator})")
+
+            ev_match = re.search(
+                r'<input[^>]*name="__EVENTVALIDATION"[^>]*value="([^"]*)"',
+                docview_html,
+            )
+            if ev_match:
+                eventvalidation = ev_match.group(1)
+                print(f"[PDF] Extracted __EVENTVALIDATION ({len(eventvalidation)} chars)")
+
+        # POST to GeneratePDF.aspx
+        gen_url = f"{self.base_url}/GeneratePDF.aspx"
+        pdf_bytes = None
+        try:
+            post_data: dict[str, str] = {
+                "id": doc_id,
+                "dbid": DBID,
+                "pageFrom": "1",
+                "pageTo": "999",
+            }
+            if viewstate:
+                post_data["__VIEWSTATE"] = viewstate
+            if viewstategenerator:
+                post_data["__VIEWSTATEGENERATOR"] = viewstategenerator
+            if eventvalidation:
+                post_data["__EVENTVALIDATION"] = eventvalidation
+
+            pdf_response = await self._make_request(
+                "POST",
+                gen_url,
+                data=post_data,
+                headers={
+                    "Content-Type": "application/x-www-form-urlencoded",
+                    "Accept": "application/pdf,text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                    "Accept-Language": "en-US,en;q=0.5",
+                    "Referer": document_url,
+                },
+                timeout=60.0,
+            )
+            pdf_response.raise_for_status()
+
+            content_type = pdf_response.headers.get("content-type", "")
+            pdf_bytes = pdf_response.content
+
+            if not pdf_bytes or len(pdf_bytes) < 100:
+                print(f"[WARN] GeneratePDF returned empty or too small response ({len(pdf_bytes)} bytes)")
+                pdf_bytes = None
+            elif self._is_error_response(pdf_bytes):
+                print(f"[WARN] GeneratePDF returned error page instead of PDF ({len(pdf_bytes)} bytes, Content-Type: {content_type})")
+                try:
+                    error_text = pdf_bytes.decode('utf-8', errors='replace')[:500]
+                    print(f"[DEBUG] GeneratePDF error content: {error_text}")
+                except Exception:
+                    pass
+                try:
+                    html_content = pdf_bytes.decode('utf-8', errors='replace')
+                    redirect_match = re.search(r'(?:window|document)\.location\s*[=:]\s*["\']([^"\']+)["\']', html_content)
+                    if redirect_match:
+                        redirect_url = redirect_match.group(1)
+                        if redirect_url.startswith('/'):
+                            redirect_url = f"{self.base_url.rstrip('/WebLink')}{redirect_url}"
+                        print(f"[PDF] Found PDF redirect URL in GeneratePDF response: {redirect_url}")
+                except Exception:
+                    pass
+                pdf_bytes = None
+            else:
+                is_html = b"<html" in pdf_bytes[:200].lower() or b"<!DOCTYPE" in pdf_bytes[:200].lower()
+                if is_html:
+                    print(f"[PDF] GeneratePDF returned HTML PDF generator page ({len(pdf_bytes)} bytes, Content-Type: {content_type})")
+                else:
+                    print(f"[PDF] Generated PDF: {len(pdf_bytes)} bytes, Content-Type: {content_type}")
+
+        except Exception as e:
+            print(f"[WARN] GeneratePDF POST failed: {e}")
+            pdf_bytes = None
+
+        # Render PDF to images
+        if pdf_bytes and pdf_bytes[:4] == b'%PDF':
+            images = self._render_pdf_to_images(pdf_bytes)
+            if images:
+                return images
+            print("[WARN] PDF rendering returned no images, trying fallback...")
+
+        # Try PDFTransition redirect
+        if pdf_bytes and b"PDFTransition" in pdf_bytes:
+            print("[PDF] GeneratePDF response contains PDFTransition reference, trying redirect...")
+            try:
+                html_content = pdf_bytes.decode('utf-8', errors='replace')
+                pt_match = re.search(r'(PDFTransition\.aspx[^"\'\\s]*)', html_content)
+                if pt_match:
+                    pt_url = f"{self.base_url}/{pt_match.group(1)}"
+                    print(f"[PDF] Following PDFTransition URL: {pt_url}")
+                    pt_response = await self._make_request(
+                        "GET", pt_url,
+                        headers={"Referer": document_url},
+                        timeout=60.0,
+                    )
+                    pt_response.raise_for_status()
+                    pt_content = pt_response.content
+                    if pt_content[:4] == b'%PDF':
+                        print(f"[PDF] Got PDF from PDFTransition: {len(pt_content)} bytes")
+                        images = self._render_pdf_to_images(pt_content)
+                        if images:
+                            return images
+            except Exception as e:
+                print(f"[PDF] PDFTransition failed: {e}")
+
+        return []
+
+    async def _fetch_via_thumbnail(self, doc_id: str, existing_html: Optional[str] = None) -> list[bytes]:
+        """Try to extract page images via ThumbnailImageDefsData.aspx.
+
+        The Laserfiche DocViewer8 JavaScript uses ThumbnailImageDefsData.aspx
+        to load thumbnail images. These thumbnails may be lower resolution
+        but are better than nothing for OCR.
+
+        Also tries the DocViewer8 image tile mechanism which loads full-
+        resolution page images via a similar endpoint.
+        """
+        images: list[bytes] = []
+
+        # Use existing HTML if provided
+        html = existing_html
+        docview_url = f"{self.base_url}/docview.aspx?id={doc_id}&dbid={DBID}"
+
+        if not html:
+            try:
+                response = await self._make_request(
+                    "GET",
+                    docview_url,
+                    timeout=30.0,
+                )
+                response.raise_for_status()
+                html = response.text
+            except Exception as e:
+                print(f"[FALLBACK] Failed to fetch docview.aspx for thumbnails: {e}")
+                return images
+
+        # Extract docInfo JSON
+        doc_info = self._extract_doc_info(html)
+        if not doc_info:
+            print("[FALLBACK] No docInfo found for thumbnail extraction")
+            return images
+
+        page_ids = doc_info.get("PageIds", [])
+        dbid = doc_info.get("DBID", DBID)
+        doc_id_from_info = str(doc_info.get("Id", doc_id))
+
+        print(f"[FALLBACK] Thumbnail extraction: {len(page_ids) - 1} pages, PageIds={page_ids}")
+
+        # Strategy 1: Try ThumbnailImageDefsData.aspx with each page ID
+        # This endpoint returns actual image data for thumbnails
+        for page_num in range(1, len(page_ids)):
+            page_id = page_ids[page_num]
+            if page_id and page_id > 0:
+                # Try thumbnail endpoint with page ID
+                thumb_url = (
+                    f"{self.base_url}/ThumbnailImageDefsData.aspx"
+                    f"?p={page_id}&db={dbid}&d={doc_id_from_info}"
+                )
+                try:
+                    thumb_response = await self._make_request(
+                        "GET",
+                        thumb_url,
+                        headers={
+                            "Accept": "image/avif,image/webp,image/apng,image/*,*/*;q=0.8",
+                            "Referer": docview_url,
+                        },
+                        timeout=30.0,
+                    )
+                    thumb_response.raise_for_status()
+                    thumb_content = thumb_response.content
+                    content_type = thumb_response.headers.get("content-type", "")
+
+                    # Check if this is a valid image (not an error placeholder)
+                    if self._is_valid_thumbnail(thumb_content, content_type):
+                        img_bytes = self._convert_to_png_bytes(thumb_content)
+                        if img_bytes:
+                            images.append(img_bytes)
+                            print(f"[FALLBACK] Thumbnail page {page_num}: Got image ({len(img_bytes)} bytes, {content_type})")
+                            continue
+
+                    print(f"[FALLBACK] Thumbnail page {page_num}: No valid image ({len(thumb_content)} bytes, {content_type})")
+                    # DEBUG: Log first 300 chars of thumbnail error
+                    try:
+                        error_text = thumb_content.decode('utf-8', errors='replace')[:300]
+                        print(f"[DEBUG] Thumbnail error content: {error_text}")
+                    except Exception:
+                        pass
+                except Exception as e:
+                    print(f"[FALLBACK] Thumbnail page {page_num}: Failed: {e}")
+
+        if images:
+            return images
+
+        # Strategy 2: Try GetImage.aspx with __VIEWSTATE from the page
+        # The GetImage.aspx endpoint may require ASP.NET session state
+        viewstate = None
+        vs_match = re.search(
+            r'<input[^>]*name="__VIEWSTATE"[^>]*value="([^"]*)"',
+            html,
+        )
+        if vs_match:
+            viewstate = vs_match.group(1)
+
+        for page_num in range(1, len(page_ids)):
+            page_id = page_ids[page_num]
+            if page_id and page_id > 0:
+                # Try GetImage.aspx with POST (some versions require POST)
+                getimage_url = f"{self.base_url}/GetImage.aspx"
+                post_data = {
+                    "pageid": str(page_id),
+                    "dbid": dbid,
+                    "docid": doc_id_from_info,
+                }
+                if viewstate:
+                    post_data["__VIEWSTATE"] = viewstate
+
+                try:
+                    gi_response = await self._make_request(
+                        "POST",
+                        getimage_url,
+                        data=post_data,
+                        headers={
+                            "Content-Type": "application/x-www-form-urlencoded",
+                            "Accept": "image/avif,image/webp,image/apng,image/*,*/*;q=0.8",
+                            "Referer": docview_url,
+                        },
+                        timeout=30.0,
+                    )
+                    gi_response.raise_for_status()
+                    gi_content = gi_response.content
+                    content_type = gi_response.headers.get("content-type", "")
+
+                    if len(gi_content) > 1000 and not self._is_error_response(gi_content):
+                        img_bytes = self._convert_to_png_bytes(gi_content)
+                        if img_bytes:
+                            images.append(img_bytes)
+                            print(f"[FALLBACK] GetImage.aspx POST page {page_num}: Got image ({len(img_bytes)} bytes, {content_type})")
+                            continue
+
+                    print(f"[FALLBACK] GetImage.aspx POST page {page_num}: No valid image ({len(gi_content)} bytes, {content_type})")
+                except Exception as e:
+                    print(f"[FALLBACK] GetImage.aspx POST page {page_num}: Failed: {e}")
+
+        if images:
+            return images
+
+        print("[FALLBACK] All thumbnail/GetImage POST attempts failed")
+        return images
+
+    def _is_valid_thumbnail(self, content: bytes, content_type: str) -> bool:
+        """Check if thumbnail content is a valid image (not an error placeholder).
+
+        Laserfiche returns small error placeholder PNGs (~1108 bytes) when
+        thumbnails can't be loaded. These contain text like 'Error loading
+        thumbnail data' rendered as an image.
+        """
+        if not content or len(content) < 500:
+            return False
+
+        # Check content type
+        if not content_type.startswith("image/"):
+            return False
+
+        # Check for PNG magic bytes
+        if content[:4] == b'\x89PNG':
+            # Error thumbnails are typically small (~1108 bytes) and have
+            # specific dimensions. Valid thumbnails are much larger.
+            # If it's a PNG under 2000 bytes, it's likely an error placeholder.
+            if len(content) < 2000:
+                return False
+            return True
+
+        # For other image types, check size
+        if len(content) < 2000:
+            return False
+
+        return True
+
+    def _extract_doc_info(self, html: str) -> Optional[dict]:
+        """Extract the docInfo JSON object from Laserfiche docview.aspx HTML.
+
+        The docInfo object contains PageIds, NumPages, DBID, Id, and other
+        metadata needed to construct image URLs.
+
+        Returns the parsed docInfo dict, or None if not found.
+        """
+        # Try multiple regex patterns to find docInfo
+        patterns = [
+            r'var\s+docInfo\s*=\s*(\{.*?"PageIds"\s*:\s*\[.*?\]\s*.*?\});',
+            r'var\s+docInfo\s*=\s*(\{.*?"NumPages"\s*:\s*\d+.*?\});',
+            r'docInfo\s*=\s*(\{.*?"PageIds"\s*:\s*\[.*?\]\s*.*?\})',
+        ]
+        for pattern in patterns:
+            match = re.search(pattern, html, re.DOTALL)
+            if match:
+                try:
+                    return json.loads(match.group(1))
+                except (json.JSONDecodeError, IndexError):
+                    continue
+        return None
 
     def _convert_to_png_bytes(self, image_data: bytes) -> Optional[bytes]:
         """Convert image data to PNG bytes using PIL."""
@@ -895,13 +1478,21 @@ class LaserficheConnector:
             if count_match:
                 num_pages = int(count_match.group(1))
 
-        # Method 3: Extract from docInfo JSON in JavaScript
+        # Method 3: Extract from docInfo JSON using the shared helper
+        doc_info = self._extract_doc_info(html)
+        if doc_info:
+            if not doc_id:
+                doc_id = str(doc_info.get("Id", ""))
+            if not num_pages:
+                num_pages = doc_info.get("NumPages")
+
+        # Method 4: Fallback to legacy extraction methods
         if not doc_id:
             doc_id = self._extract_doc_id_from_html(html, viewer_url)
         if not num_pages:
             num_pages = self._extract_num_pages_from_html(html)
 
-        # Method 4: Extract doc_id from the viewer URL itself
+        # Method 5: Extract doc_id from the viewer URL itself
         if not doc_id:
             match = re.search(r"id=(\d+)", viewer_url)
             if match:

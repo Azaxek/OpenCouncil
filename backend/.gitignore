@@ -21,3 +21,15 @@ build/
 
 # Logs
 *.log
+
+# Test artifacts and debug files
+test_*.py
+debug_*.py
+debug_*.html
+docviewer8_full.js
+docviewer8.js
+*.png
+*.jpg
+*.jpeg
+*.gif
+cookies.txt
