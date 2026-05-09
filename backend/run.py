@@ -17,7 +17,12 @@ load_dotenv()
 if __name__ == "__main__":
     port = int(sys.argv[sys.argv.index("--port") + 1]) if "--port" in sys.argv else 8000
 
-    llm_status = "Available (DeepSeek)" if os.getenv("DEEPSEEK_API_KEY") else "Not configured"
+    providers = []
+    if os.getenv("DEEPSEEK_API_KEY"):
+        providers.append("DeepSeek (text)")
+    if os.getenv("OPENAI_API_KEY"):
+        providers.append("GPT-4o Vision (scanned images)")
+    llm_status = ", ".join(providers) if providers else "Not configured"
 
     print("=" * 60)
     print("  Civic City Hub API Server")

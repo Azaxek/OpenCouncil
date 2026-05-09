@@ -1,16 +1,14 @@
 """
 Laserfiche WebLink connector for Civic City Hub.
 
-Paris, TX stores city council agendas in Laserfiche WebLink at
+Paris, TX stores city council minutes in Laserfiche WebLink at
 https://documents.paristexas.gov/weblink/. The system provides RSS feeds
-for folder contents, which we use to discover agenda documents.
+for folder contents, which we use to discover minutes documents.
 
-Folder structure (3 levels deep):
-  City Council (5320)
-    -> Agenda Packets (5321)
-      -> 2026 (1395567), 2025 (1365526), 2024 (1341834), ...
-        -> 05-11 (1402602), 04-27 (1401987), ...  (meeting subfolders)
-          -> Agenda (docid)  (scanned document in Laserfiche)
+Minutes folder structure (2 levels deep):
+  Minutes (20)
+    -> 2026 (1396340), 2025 (1365526), 2024 (1341834), ...
+      -> 01-12-2026 (docid), 01-28-2026 (docid), ...  (minutes documents)
 
 RSS feed URL pattern:
   https://documents.paristexas.gov/WebLink/rss/dbid/0/folder/{folderId}/feed.rss
@@ -18,12 +16,16 @@ RSS feed URL pattern:
 Document viewer URL pattern:
   https://documents.paristexas.gov/WebLink/docview.aspx?id={docId}&dbid=0
 
+Page image URL pattern:
+  https://documents.paristexas.gov/WebLink/0/doc/{docId}/Page{pageNum}.aspx
+
 NOTE: Laserfiche stores documents as scanned images (TIFF), not text PDFs.
-The docview.aspx returns an HTML viewer page. For text extraction, use
-GPT-4o Vision on the viewer page or OCR on the rendered page images.
+The docview.aspx returns an HTML viewer page with page image URLs embedded
+in the toolbar. We extract these URLs and pass them to GPT-4o Vision for
+text extraction from the scanned images.
 """
 
-import hashlib
+import json
 import re
 import uuid
 from datetime import datetime, timezone
@@ -31,23 +33,12 @@ from typing import Optional
 from xml.etree import ElementTree as ET
 
 import httpx
+from bs4 import BeautifulSoup
 
-from models.schemas import Agenda, AgendaItem, Minutes
-
-
-def _make_agenda_id(meeting_date: Optional[datetime], title: str) -> str:
-    """Generate a deterministic agenda ID from meeting date and title.
-    
-    This ensures the same agenda always gets the same ID, even across
-    repeated fetch_agenda_list() calls. Uses first 8 chars of SHA-256 hash.
-    """
-    key = f"{meeting_date.isoformat() if meeting_date else 'unknown'}|{title}"
-    return hashlib.sha256(key.encode()).hexdigest()[:8]
+from models.schemas import Minutes
 
 # Laserfiche folder IDs for Paris, TX
 LASERFICHE_BASE = "https://documents.paristexas.gov/WebLink"
-CITY_COUNCIL_FOLDER_ID = "5320"
-AGENDA_PACKETS_FOLDER_ID = "5321"
 MINUTES_FOLDER_ID = "20"
 DBID = "0"
 
@@ -55,11 +46,11 @@ DBID = "0"
 class LaserficheConnector:
     """Connector for Laserfiche WebLink document management systems.
 
-    Discovers city council agendas via RSS feeds and provides
+    Discovers city council minutes via RSS feeds and provides
     viewer URLs for the scanned document pages.
 
-    The folder structure is 3 levels deep:
-      Agenda Packets (5321) -> Year (2026) -> Meeting (05-11) -> Document
+    The folder structure is 2 levels deep:
+      Minutes (20) -> Year (2026) -> Document (01-12-2026)
     """
 
     def __init__(self, city: str = "Paris", state: str = "TX"):
@@ -165,283 +156,6 @@ class LaserficheConnector:
             return []
 
         return items
-
-    async def _get_current_year_folder_id(self) -> Optional[str]:
-        """Find the folder ID for the current year's agenda packets."""
-        items = await self._fetch_rss(AGENDA_PACKETS_FOLDER_ID)
-        if not items:
-            return None
-
-        current_year = datetime.now(timezone.utc).year
-
-        # Look for the current year folder
-        for item in items:
-            if item["is_folder"] and item["title"] == str(current_year):
-                return item["entity_id"]
-
-        # Fall back to the most recent year folder
-        year_folders = []
-        for item in items:
-            if item["is_folder"] and item["title"].isdigit():
-                year_folders.append((int(item["title"]), item["entity_id"]))
-
-        if year_folders:
-            year_folders.sort(key=lambda x: x[0], reverse=True)
-            return year_folders[0][1]
-
-        return None
-
-    def _parse_date_from_meeting_title(self, title: str, year: int) -> Optional[datetime]:
-        """Extract a date from a meeting subfolder title like '05-11' or '01-06 Workshop - CANCELLED'.
-
-        The title contains MM-DD at the start. We combine with the given year.
-        """
-        if not title:
-            return None
-
-        # Match MM-DD at the start of the title
-        match = re.match(r"(\d{1,2})-(\d{1,2})", title.strip())
-        if match:
-            try:
-                month = int(match.group(1))
-                day = int(match.group(2))
-                if 1 <= month <= 12 and 1 <= day <= 31:
-                    return datetime(year, month, day, tzinfo=timezone.utc)
-            except ValueError:
-                pass
-
-        return None
-
-    async def fetch_agenda_list(self, limit: int = 20) -> list[dict]:
-        """Fetch the list of recent agenda documents from Laserfiche.
-
-        Strategy (3 levels deep):
-        1. Get the Agenda Packets folder contents (year subfolders)
-        2. Find the current/most recent year folder
-        3. Get the meeting subfolders from that year (e.g. "05-11", "04-27")
-        4. For each meeting subfolder, get the actual document inside
-        """
-        year_folder_id = await self._get_current_year_folder_id()
-        if not year_folder_id:
-            print("[WARN] No year folder found in Agenda Packets")
-            return []
-
-        # Determine the year from the folder title
-        year = datetime.now(timezone.utc).year
-
-        # Fetch meeting subfolders from the year folder
-        meeting_folders = await self._fetch_rss(year_folder_id)
-        if not meeting_folders:
-            return []
-
-        # Filter to only folders (each meeting is a subfolder)
-        meeting_folders = [m for m in meeting_folders if m["is_folder"]]
-
-        # Sort by pub_date descending (most recent first)
-        meeting_folders.sort(
-            key=lambda m: m["pub_date"] or datetime.min.replace(tzinfo=timezone.utc),
-            reverse=True,
-        )
-
-        # Limit how many meeting folders we'll process
-        meeting_folders = meeting_folders[:limit]
-
-        agendas = []
-        for meeting in meeting_folders:
-            # Fetch the contents of this meeting subfolder to find the document
-            meeting_items = await self._fetch_rss(meeting["entity_id"])
-
-            # Find the first document in this meeting folder
-            doc = None
-            for item in meeting_items:
-                if item["is_document"]:
-                    doc = item
-                    break
-
-            if not doc:
-                continue
-
-            # Parse meeting date from the folder title (e.g. "05-11" -> May 11)
-            meeting_date = self._parse_date_from_meeting_title(
-                meeting["title"], year
-            )
-
-            # Fall back to pubDate
-            if not meeting_date and meeting["pub_date"]:
-                meeting_date = meeting["pub_date"]
-
-            document_url = (
-                self._document_viewer_url(doc["entity_id"])
-                if doc["entity_id"]
-                else None
-            )
-
-            # Build a descriptive title
-            title = meeting["title"]
-            if "workshop" in title.lower():
-                display_title = f"City Council Workshop - {title}"
-            elif "special" in title.lower() or "called" in title.lower():
-                display_title = f"Special City Council Meeting - {title}"
-            else:
-                display_title = f"City Council Meeting - {title}"
-
-            agendas.append({
-                "id": _make_agenda_id(meeting_date, display_title),
-                "title": display_title,
-                "meeting_date": meeting_date,
-                "url": document_url,
-                "document_url": document_url,
-                "doc_id": doc["entity_id"],
-                "pub_date": meeting["pub_date"],
-                "meeting_folder_title": meeting["title"],
-            })
-
-        # Sort by date descending
-        agendas.sort(
-            key=lambda a: a["meeting_date"] or datetime.min.replace(tzinfo=timezone.utc),
-            reverse=True,
-        )
-
-        return agendas[:limit]
-
-    async def fetch_agenda_document_text(self, document_url: str) -> Optional[str]:
-        """Attempt to extract text from a Laserfiche document.
-
-        NOTE: Laserfiche stores documents as scanned images (TIFF).
-        The docview.aspx returns an HTML viewer page, not a text PDF.
-
-        This method returns the viewer URL for LLM Vision processing.
-        When GPT-4o Vision is available, it can read the document
-        directly from this URL.
-
-        Returns the viewer URL as a fallback text representation.
-        """
-        if not document_url:
-            return None
-
-        try:
-            response = await self.client.get(document_url)
-            response.raise_for_status()
-
-            # The response is HTML (viewer page), not a PDF
-            # Return the URL for LLM Vision processing
-            return (
-                f"[This document is a scanned image available at: "
-                f"{document_url}]"
-            )
-        except Exception as e:
-            print(f"[WARN] Error accessing document viewer: {e}")
-            return None
-
-    def _parse_agenda_items_from_text(self, text: str) -> list[AgendaItem]:
-        """Parse individual agenda items from raw text."""
-        items = []
-        if not text:
-            return items
-
-        section_patterns = [
-            r"(CALL TO ORDER|ROLL CALL)",
-            r"(PUBLIC COMMENT|CITIZEN PARTICIPATION|OPEN FORUM)",
-            r"(CONSENT AGENDA|CONSENT ITEMS)",
-            r"(PUBLIC HEARING)",
-            r"(NEW BUSINESS|REGULAR BUSINESS|ACTION ITEMS)",
-            r"(OLD BUSINESS|UNFINISHED BUSINESS)",
-            r"(REPORTS|STAFF REPORTS|COMMITTEE REPORTS)",
-            r"(EXECUTIVE SESSION|CLOSED SESSION)",
-            r"(ADJOURNMENT)",
-        ]
-
-        current_section = "Preamble"
-        lines = text.split("\n")
-
-        for line in lines:
-            line = line.strip()
-            if not line:
-                continue
-
-            found_section = False
-            for pattern in section_patterns:
-                if re.search(pattern, line, re.IGNORECASE):
-                    current_section = line
-                    found_section = True
-                    break
-
-            if not found_section and len(line) > 10:
-                items.append(AgendaItem(
-                    title=line[:200],
-                    description=line if len(line) > 200 else None,
-                    category=current_section,
-                ))
-
-        return items
-
-    async def get_latest_agenda(self) -> Optional[Agenda]:
-        """Fetch the most recent city council agenda from Laserfiche."""
-        agendas = await self.fetch_agenda_list(limit=5)
-        if not agendas:
-            return None
-
-        latest = agendas[0]
-
-        # Access the document viewer (returns HTML, not PDF text)
-        raw_text = None
-        if latest.get("document_url"):
-            raw_text = await self.fetch_agenda_document_text(
-                latest["document_url"]
-            )
-
-        # Parse items from text (will be minimal for scanned docs)
-        items = self._parse_agenda_items_from_text(raw_text) if raw_text else []
-
-        # Determine meeting type from title
-        title_lower = (latest["title"] or "").lower()
-        if "regular" in title_lower:
-            meeting_type = "City Council Regular Meeting"
-        elif "special" in title_lower or "called" in title_lower:
-            meeting_type = "City Council Special Meeting"
-        elif "workshop" in title_lower:
-            meeting_type = "City Council Workshop"
-        elif "executive" in title_lower:
-            meeting_type = "Executive Session"
-        else:
-            meeting_type = "City Council Meeting"
-
-        return Agenda(
-            id=latest["id"],
-            city=self.city,
-            state=self.state,
-            meeting_date=latest["meeting_date"] or datetime.now(timezone.utc),
-            meeting_type=meeting_type,
-            title=latest["title"],
-            url=latest["url"] or "",
-            pdf_url=latest.get("document_url"),
-            document_url=latest.get("document_url"),
-            items=items,
-            raw_text=raw_text,
-            source="laserfiche",
-        )
-
-    async def list_agendas(self, limit: int = 10) -> list[dict]:
-        """List recent agendas with metadata (no full parsing)."""
-        agendas = await self.fetch_agenda_list(limit=limit)
-        return [
-            {
-                "id": a["id"],
-                "title": a["title"],
-                "meeting_date": (
-                    a["meeting_date"].isoformat()
-                    if a["meeting_date"]
-                    else None
-                ),
-                "url": a["url"],
-                "document_url": a["document_url"],
-            }
-            for a in agendas
-        ]
-
-    # ──────────────────────────────────────────
-    # Minutes (official records of what happened)
-    # ──────────────────────────────────────────
 
     async def _get_current_year_minutes_folder_id(self) -> Optional[str]:
         """Find the folder ID for the current year's minutes.
@@ -559,6 +273,154 @@ class LaserficheConnector:
 
         return minutes_list[:limit]
 
+    async def fetch_document_text(self, document_url: str) -> Optional[str]:
+        """Attempt to extract text from a Laserfiche document.
+
+        NOTE: Laserfiche stores documents as scanned images (TIFF).
+        The docview.aspx returns an HTML viewer page with page image
+        URLs embedded in the toolbar navigation.
+
+        This method extracts the page image URLs from the viewer HTML
+        and returns them as a structured text block that the LLM
+        summarizer can use with GPT-4o Vision to read the scanned images.
+
+        Returns a structured text block with page image URLs.
+        """
+        if not document_url:
+            return None
+
+        try:
+            response = await self.client.get(document_url)
+            response.raise_for_status()
+
+            html = response.text
+
+            # Extract page image URLs from the toolbar navigation links
+            # Pattern: /WebLink/0/doc/{docId}/Page{pageNum}.aspx
+            page_urls = self._extract_page_image_urls(html, document_url)
+
+            if page_urls:
+                lines = [
+                    "[This document is a scanned image. "
+                    "Page images are available at the following URLs:]"
+                ]
+                for i, url in enumerate(page_urls, 1):
+                    lines.append(f"[Page {i}: {url}]")
+                return "\n".join(lines)
+
+            # Fallback: return the viewer URL
+            return (
+                f"[This document is a scanned image available at: "
+                f"{document_url}]"
+            )
+        except Exception as e:
+            print(f"[WARN] Error accessing document viewer: {e}")
+            return None
+
+    async def fetch_page_image_urls(
+        self, document_url: str
+    ) -> list[str]:
+        """Fetch and extract page image URLs from a document viewer page.
+
+        Returns a list of full URLs to each page image, which can be
+        passed to GPT-4o Vision for text extraction.
+        """
+        if not document_url:
+            return []
+
+        try:
+            response = await self.client.get(document_url)
+            response.raise_for_status()
+            return self._extract_page_image_urls(
+                response.text, document_url
+            )
+        except Exception as e:
+            print(
+                f"[WARN] Error fetching page image URLs: {e}"
+            )
+            return []
+
+    def _extract_page_image_urls(
+        self, html: str, viewer_url: str
+    ) -> list[str]:
+        """Extract page image URLs from the docview.aspx HTML.
+
+        Laserfiche DocViewer8 serves each page as a separate image at:
+          /WebLink/0/doc/{docId}/Page{pageNum}.aspx
+
+        These URLs appear in the page toolbar navigation links.
+        We also extract the docId from the page toolbar or docInfo JSON.
+        """
+        page_urls = []
+
+        # Method 1: Extract from page toolbar links
+        # Pattern: href="/WebLink/0/doc/{docId}/Page{pageNum}.aspx"
+        soup = BeautifulSoup(html, "html.parser")
+        for link in soup.find_all("a", href=True):
+            href = link["href"]
+            match = re.search(
+                r"/WebLink/0/doc/(\d+)/Page(\d+)\.aspx", href
+            )
+            if match:
+                doc_id = match.group(1)
+                page_num = int(match.group(2))
+                full_url = (
+                    f"{LASERFICHE_BASE}/0/doc/{doc_id}/Page{page_num}.aspx"
+                )
+                if full_url not in page_urls:
+                    page_urls.append(full_url)
+
+        # Method 2: Extract from docInfo JSON in JavaScript
+        if not page_urls:
+            doc_id = self._extract_doc_id_from_html(html, viewer_url)
+            num_pages = self._extract_num_pages_from_html(html)
+            if doc_id and num_pages:
+                for page_num in range(1, num_pages + 1):
+                    page_urls.append(
+                        f"{LASERFICHE_BASE}/0/doc/{doc_id}/Page{page_num}.aspx"
+                    )
+
+        # Sort by page number
+        page_urls.sort(
+            key=lambda u: int(re.search(r"Page(\d+)\.aspx", u).group(1))
+            if re.search(r"Page(\d+)\.aspx", u)
+            else 0
+        )
+
+        return page_urls
+
+    def _extract_doc_id_from_html(
+        self, html: str, viewer_url: str
+    ) -> Optional[str]:
+        """Extract document ID from docInfo JSON or form action."""
+        # Try docInfo JSON
+        match = re.search(
+            r'"Id"\s*:\s*(\d+)', html
+        )
+        if match:
+            return match.group(1)
+
+        # Try form action
+        match = re.search(
+            r'action="[^"]*DocView\.aspx\?id=(\d+)', html
+        )
+        if match:
+            return match.group(1)
+
+        # Try extracting from the viewer URL itself
+        match = re.search(r"id=(\d+)", viewer_url)
+        if match:
+            return match.group(1)
+
+        return None
+
+    def _extract_num_pages_from_html(self, html: str) -> Optional[int]:
+        """Extract number of pages from docInfo JSON."""
+        match = re.search(r'"NumPages"\s*:\s*(\d+)', html)
+        if match:
+            return int(match.group(1))
+        return None
+
     async def get_latest_minutes(self) -> Optional[Minutes]:
         """Fetch the most recent city council minutes from Laserfiche."""
         minutes_list = await self.fetch_minutes_list(limit=5)
@@ -569,8 +431,12 @@ class LaserficheConnector:
 
         # Access the document viewer (returns HTML, not PDF text)
         raw_text = None
+        page_image_urls: list[str] = []
         if latest.get("document_url"):
-            raw_text = await self.fetch_agenda_document_text(
+            raw_text = await self.fetch_document_text(
+                latest["document_url"]
+            )
+            page_image_urls = await self.fetch_page_image_urls(
                 latest["document_url"]
             )
 
@@ -597,6 +463,7 @@ class LaserficheConnector:
             url=latest["url"] or "",
             document_url=latest.get("document_url"),
             raw_text=raw_text,
+            page_image_urls=page_image_urls,
             source="laserfiche",
         )
 

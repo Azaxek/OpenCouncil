@@ -1,19 +1,11 @@
 """
 CivicPlus connector for Civic City Hub.
 
+NOTE: This connector is currently unused. The app uses the Laserfiche connector
+directly for Paris, TX. This file is kept for future use when adding cities
+that use CivicPlus for their agenda management.
+
 Scrapes city council agendas from CivicPlus-powered municipal websites.
-Paris, TX uses CivicPlus (https://www.paristexas.gov) with Laserfiche
-for document storage (https://documents.paristexas.gov/weblink/).
-
-Strategy:
-1. Fetch the AgendaCenter page to get the list of recent agendas
-2. Parse the HTML to extract agenda metadata (date, type, PDF links)
-3. Download PDFs and extract text
-4. Return structured Agenda objects
-
-For cities using CivicPlus, the agenda data is loaded dynamically via
-JavaScript. We use the /AgendaCenter/Search/ endpoint or parse the
-server-rendered HTML from the UpdateCategoryList POST endpoint.
 """
 
 import re
@@ -23,8 +15,6 @@ from typing import Optional
 
 import httpx
 from bs4 import BeautifulSoup
-
-from models.schemas import Agenda, AgendaItem
 
 # Use html.parser instead of lxml to avoid build issues on Python 3.14+
 PARSER = "html.parser"
@@ -186,93 +176,3 @@ class CivicPlusConnector:
             except ValueError:
                 continue
         return None
-
-    def _parse_agenda_items_from_text(self, text: str) -> list[AgendaItem]:
-        """
-        Parse individual agenda items from the raw text of an agenda PDF.
-        Uses simple section-based parsing.
-        """
-        items = []
-        if not text:
-            return items
-
-        # Common agenda section headers
-        section_patterns = [
-            r"(CALL TO ORDER|ROLL CALL)",
-            r"(PUBLIC COMMENT|CITIZEN PARTICIPATION|OPEN FORUM)",
-            r"(CONSENT AGENDA|CONSENT ITEMS)",
-            r"(PUBLIC HEARING)",
-            r"(NEW BUSINESS|REGULAR BUSINESS|ACTION ITEMS)",
-            r"(OLD BUSINESS|UNFINISHED BUSINESS)",
-            r"(REPORTS|STAFF REPORTS|COMMITTEE REPORTS)",
-            r"(EXECUTIVE SESSION|CLOSED SESSION)",
-            r"(ADJOURNMENT)",
-        ]
-
-        current_section = "Preamble"
-        lines = text.split("\n")
-
-        for line in lines:
-            line = line.strip()
-            if not line:
-                continue
-
-            # Check if this line is a section header
-            for pattern in section_patterns:
-                if re.search(pattern, line, re.IGNORECASE):
-                    current_section = line
-                    break
-            else:
-                # This is an agenda item
-                if len(line) > 10:  # Skip short lines
-                    items.append(AgendaItem(
-                        title=line[:200],  # Truncate long titles
-                        description=line if len(line) > 200 else None,
-                        category=current_section,
-                    ))
-
-        return items
-
-    async def get_latest_agenda(self) -> Optional[Agenda]:
-        """Fetch the most recent city council agenda."""
-        agendas = await self.fetch_agenda_list()
-        if not agendas:
-            return None
-
-        latest = agendas[0]
-
-        # Try to get PDF text
-        raw_text = None
-        if latest.get("pdf_url"):
-            raw_text = await self.fetch_agenda_pdf_text(latest["pdf_url"])
-
-        # Parse items from text
-        items = self._parse_agenda_items_from_text(raw_text) if raw_text else []
-
-        return Agenda(
-            id=latest["id"],
-            city=self.city,
-            state=self.state,
-            meeting_date=latest["meeting_date"] or datetime.utcnow(),
-            meeting_type="City Council Regular Meeting",
-            title=latest["title"],
-            url=latest["url"] or "",
-            pdf_url=latest.get("pdf_url"),
-            items=items,
-            raw_text=raw_text,
-            source="civicplus",
-        )
-
-    async def list_agendas(self, limit: int = 10) -> list[dict]:
-        """List recent agendas with metadata (no full parsing)."""
-        agendas = await self.fetch_agenda_list()
-        return [
-            {
-                "id": a["id"],
-                "title": a["title"],
-                "meeting_date": a["meeting_date"].isoformat() if a["meeting_date"] else None,
-                "url": a["url"],
-                "pdf_url": a["pdf_url"],
-            }
-            for a in agendas[:limit]
-        ]

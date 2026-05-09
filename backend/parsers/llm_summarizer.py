@@ -1,74 +1,28 @@
 """
 LLM-powered summarization pipeline for Civic City Hub.
 
-Takes raw agenda text and produces:
-- Plain-language summary of the meeting
+Takes meeting minutes text or scanned document images and produces:
+- Plain-language summary of what happened at the meeting
 - Key decisions with explanations
 - Budget/financial items highlighted
 - Public comment opportunities
 - Per-item plain-language translations
 
-Uses DeepSeek API (OpenAI-compatible) for cost-effective summarization.
+Supports two modes:
+1. Text-based summarization (DeepSeek) — for documents with extractable text
+2. Vision-based summarization (GPT-4o) — for scanned document images (TIFF)
 """
 
+import base64
 import json
 import os
 from typing import Optional
 
+import httpx
 from openai import OpenAI
 
-from models.schemas import Agenda, Minutes, SummaryResponse
+from models.schemas import Minutes, SummaryResponse
 
-
-# System prompt for agenda summarization
-SYSTEM_PROMPT = """You are a civic technology assistant that helps residents understand 
-their local government. Your job is to translate complex city council agendas into 
-plain, accessible language.
-
-For each agenda, you will:
-1. Identify the most important decisions the council will make
-2. Explain what each item means in plain language
-3. Highlight any items that affect residents directly (taxes, fees, zoning, services)
-4. Note opportunities for public comment
-5. Flag budget/financial items with estimated amounts
-
-Be objective and factual. Do not express political opinions. 
-Do not speculate on outcomes. Just explain what's being proposed.
-
-Format your response as JSON with this structure:
-{
-  "summary": "2-3 paragraph plain-language overview of the meeting",
-  "key_decisions": [
-    {
-      "title": "Short title of the decision",
-      "plain_english": "What this means in simple terms",
-      "impact": "Who this affects and how",
-      "category": "zoning|budget|public-safety|infrastructure|administration|other"
-    }
-  ],
-  "budget_items": [
-    {
-      "title": "Item title",
-      "amount": "$X,XXX",
-      "description": "What the money is for"
-    }
-  ],
-  "public_comment_opportunities": [
-    {
-      "item": "Item title",
-      "deadline": "When to comment",
-      "how": "How to submit comments"
-    }
-  ],
-  "items": [
-    {
-      "title": "Original agenda item title",
-      "plain_english": "Plain language explanation",
-      "category": "section category",
-      "action_needed": "vote|discussion|information|public-hearing|none"
-    }
-  ]
-}"""
 
 # System prompt for minutes summarization
 MINUTES_SYSTEM_PROMPT = """You are a civic technology assistant that helps residents understand
@@ -126,69 +80,227 @@ Format your response as JSON with this structure:
   ]
 }"""
 
+# Vision system prompt — instructs GPT-4o to first extract text from images,
+# then produce the same structured summary
+VISION_SYSTEM_PROMPT = """You are a civic technology assistant that helps residents understand
+what happened at their local government meetings. Your job is to read scanned city council
+meeting minutes from document images and translate them into plain, accessible language.
+
+First, carefully read all text visible in the scanned document images.
+Then, produce a structured summary of what happened at the meeting.
+
+Minutes are the OFFICIAL RECORD of what actually happened at a meeting — what was discussed,
+what decisions were made, how council members voted, and what actions were taken.
+
+Be objective and factual. Do not express political opinions.
+Focus on WHAT HAPPENED — the actual outcomes, votes, and actions taken.
+
+Format your response as JSON with this structure:
+{
+  "summary": "2-3 paragraph plain-language overview of what happened at the meeting",
+  "key_decisions": [
+    {
+      "title": "Short title of the decision",
+      "plain_english": "What this means in simple terms",
+      "impact": "Who this affects and how",
+      "category": "zoning|budget|public-safety|infrastructure|administration|other",
+      "vote": "How the vote went (e.g. 5-0 passed, 3-2 failed)"
+    }
+  ],
+  "budget_items": [
+    {
+      "title": "Item title",
+      "amount": "$X,XXX",
+      "description": "What the money is for"
+    }
+  ],
+  "public_comment_opportunities": [
+    {
+      "item": "Topic discussed",
+      "deadline": "When comments were received or next opportunity",
+      "how": "How residents provided input"
+    }
+  ],
+  "items": [
+    {
+      "title": "Agenda item or topic discussed",
+      "plain_english": "Plain language explanation of what happened",
+      "category": "section category",
+      "action_needed": "approved|denied|tabled|discussed|received"
+    }
+  ]
+}"""
+
 
 class LLMSummarizer:
-    """Summarizes city council agendas and minutes using DeepSeek API."""
+    """Summarizes city council minutes using LLM APIs.
 
-    def __init__(self, api_key: Optional[str] = None, model: str = "deepseek-chat"):
-        self.api_key = api_key or os.getenv("DEEPSEEK_API_KEY")
-        if not self.api_key:
-            raise ValueError(
-                "DEEPSEEK_API_KEY is required. Set it as an environment variable "
-                "or pass it to the constructor."
+    Supports two modes:
+    - Text mode (DeepSeek): For documents with extractable text content
+    - Vision mode (GPT-4o): For scanned document images (TIFF) from Laserfiche
+
+    Falls back to text mode if no page_image_urls are available.
+    Uses GPT-4o Vision when page images are present.
+    """
+
+    def __init__(
+        self,
+        deepseek_key: Optional[str] = None,
+        openai_key: Optional[str] = None,
+        vision_model: str = "gpt-4o-mini",
+        text_model: str = "deepseek-chat",
+    ):
+        self.deepseek_key = deepseek_key or os.getenv("DEEPSEEK_API_KEY")
+        self.openai_key = openai_key or os.getenv("OPENAI_API_KEY")
+        self.vision_model = vision_model
+        self.text_model = text_model
+
+        # Initialize DeepSeek client (text mode)
+        if self.deepseek_key:
+            self.deepseek_client = OpenAI(
+                api_key=self.deepseek_key,
+                base_url="https://api.deepseek.com",
             )
-        self.client = OpenAI(
-            api_key=self.api_key,
-            base_url="https://api.deepseek.com",
-        )
-        self.model = model
+        else:
+            self.deepseek_client = None
 
-    async def summarize_agenda(self, agenda: Agenda) -> SummaryResponse:
-        """Summarize a full agenda using the LLM."""
-        # Prepare the agenda text for the LLM
-        agenda_text = self._prepare_agenda_text(agenda)
+        # Initialize OpenAI client (vision mode)
+        if self.openai_key:
+            self.openai_client = OpenAI(api_key=self.openai_key)
+        else:
+            self.openai_client = None
 
-        user_content = (
-            f"Please summarize the following city council agenda "
-            f"for {agenda.city}, {agenda.state} on "
-            f"{agenda.meeting_date.strftime('%B %d, %Y')}.\n\n"
-            f"Meeting Type: {agenda.meeting_type}\n"
-            f"Title: {agenda.title}\n\n"
-            f"Agenda Text:\n{agenda_text}\n\n"
-            f"Return ONLY valid JSON matching the specified structure."
-        )
+        if not self.deepseek_key and not self.openai_key:
+            raise ValueError(
+                "At least one of DEEPSEEK_API_KEY or OPENAI_API_KEY is required. "
+                "Set them as environment variables or pass to the constructor."
+            )
 
-        response = self.client.chat.completions.create(
-            model=self.model,
+        # HTTP client for fetching page images
+        self.http_client = httpx.AsyncClient(timeout=30.0)
+
+    async def close(self):
+        await self.http_client.aclose()
+
+    async def summarize_minutes(self, minutes: Minutes) -> SummaryResponse:
+        """Summarize meeting minutes using the best available method.
+
+        Priority:
+        1. Vision mode (GPT-4o) — if page_image_urls are available and
+           OPENAI_API_KEY is set. This reads scanned document images directly.
+        2. Text mode (DeepSeek) — if raw_text is available and DEEPSEEK_API_KEY
+           is set. This works for text-based documents.
+        """
+        # Prefer vision mode for scanned document images
+        if (
+            minutes.page_image_urls
+            and self.openai_client
+        ):
+            return await self._summarize_with_vision(minutes)
+
+        # Fall back to text mode
+        if self.deepseek_client:
+            return await self._summarize_with_text(minutes)
+
+        # If only one client is available, use it
+        if self.openai_client:
+            return await self._summarize_with_vision(minutes)
+
+        if self.deepseek_client:
+            return await self._summarize_with_text(minutes)
+
+        raise RuntimeError("No LLM client available for summarization.")
+
+    async def _summarize_with_vision(
+        self, minutes: Minutes
+    ) -> SummaryResponse:
+        """Summarize minutes using GPT-4o Vision on scanned document images.
+
+        Fetches each page image from the Laserfiche server and passes them
+        to GPT-4o Vision, which reads the text from the scanned images and
+        produces a structured summary.
+        """
+        # Build the user message with text context + images
+        content_parts: list[dict] = [
+            {
+                "type": "text",
+                "text": (
+                    f"Please summarize the following city council meeting minutes "
+                    f"for {minutes.city}, {minutes.state} on "
+                    f"{minutes.meeting_date.strftime('%B %d, %Y')}.\n\n"
+                    f"Meeting Type: {minutes.meeting_type}\n"
+                    f"Title: {minutes.title}\n\n"
+                    f"The document has {len(minutes.page_image_urls)} page(s). "
+                    f"Please read all pages carefully and produce a complete summary.\n\n"
+                    f"Return ONLY valid JSON matching the specified structure."
+                ),
+            }
+        ]
+
+        # Fetch and attach each page image
+        for i, image_url in enumerate(minutes.page_image_urls):
+            try:
+                image_data = await self._fetch_image(image_url)
+                if image_data:
+                    content_parts.append({
+                        "type": "text",
+                        "text": f"--- Page {i + 1} ---",
+                    })
+                    content_parts.append({
+                        "type": "image_url",
+                        "image_url": {
+                            "url": f"data:image/png;base64,{image_data}",
+                            "detail": "high",
+                        },
+                    })
+            except Exception as e:
+                print(
+                    f"[WARN] Failed to fetch page {i + 1} image: {e}"
+                )
+
+        response = self.openai_client.chat.completions.create(
+            model=self.vision_model,
             messages=[
-                {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": user_content},
+                {
+                    "role": "system",
+                    "content": VISION_SYSTEM_PROMPT,
+                },
+                {"role": "user", "content": content_parts},
             ],
             temperature=0.3,
-            max_tokens=2000,
+            max_tokens=4000,
             response_format={"type": "json_object"},
         )
 
         result = json.loads(response.choices[0].message.content)
 
         return SummaryResponse(
-            agenda_id=agenda.id,
-            meeting_date=agenda.meeting_date,
-            meeting_type=agenda.meeting_type,
+            minutes_id=minutes.id,
+            meeting_date=minutes.meeting_date,
+            meeting_type=minutes.meeting_type,
             summary=result.get("summary", "No summary available."),
             key_decisions=result.get("key_decisions", []),
             budget_items=result.get("budget_items", []),
-            public_comment_opportunities=result.get("public_comment_opportunities", []),
+            public_comment_opportunities=result.get(
+                "public_comment_opportunities", []
+            ),
             items=result.get("items", []),
         )
 
-    async def summarize_minutes(self, minutes: Minutes) -> SummaryResponse:
-        """Summarize meeting minutes using the LLM.
+    async def _fetch_image(self, url: str) -> Optional[str]:
+        """Fetch an image from a URL and return it as base64-encoded string."""
+        try:
+            response = await self.http_client.get(url)
+            response.raise_for_status()
+            return base64.b64encode(response.content).decode("utf-8")
+        except Exception as e:
+            print(f"[WARN] Error fetching image {url}: {e}")
+            return None
 
-        Minutes are the official record of what happened at a meeting,
-        as opposed to an agenda which lists what's planned.
-        """
-        # Prepare the minutes text for the LLM
+    async def _summarize_with_text(
+        self, minutes: Minutes
+    ) -> SummaryResponse:
+        """Summarize minutes using DeepSeek text model."""
         minutes_text = self._prepare_minutes_text(minutes)
 
         user_content = (
@@ -201,8 +313,8 @@ class LLMSummarizer:
             f"Return ONLY valid JSON matching the specified structure."
         )
 
-        response = self.client.chat.completions.create(
-            model=self.model,
+        response = self.deepseek_client.chat.completions.create(
+            model=self.text_model,
             messages=[
                 {"role": "system", "content": MINUTES_SYSTEM_PROMPT},
                 {"role": "user", "content": user_content},
@@ -215,61 +327,17 @@ class LLMSummarizer:
         result = json.loads(response.choices[0].message.content)
 
         return SummaryResponse(
-            agenda_id=minutes.id,
+            minutes_id=minutes.id,
             meeting_date=minutes.meeting_date,
             meeting_type=minutes.meeting_type,
             summary=result.get("summary", "No summary available."),
             key_decisions=result.get("key_decisions", []),
             budget_items=result.get("budget_items", []),
-            public_comment_opportunities=result.get("public_comment_opportunities", []),
+            public_comment_opportunities=result.get(
+                "public_comment_opportunities", []
+            ),
             items=result.get("items", []),
         )
-
-    async def summarize_text(
-        self, text: str, city: str = "Paris", state: str = "TX", meeting_date: str = ""
-    ) -> dict:
-        """Summarize raw agenda text directly."""
-        user_content = (
-            f"Please summarize the following city council agenda "
-            f"for {city}, {state} on {meeting_date}.\n\n"
-            f"Agenda Text:\n{text[:15000]}\n\n"
-            f"Return ONLY valid JSON matching the specified structure."
-        )
-
-        response = self.client.chat.completions.create(
-            model=self.model,
-            messages=[
-                {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": user_content},
-            ],
-            temperature=0.3,
-            max_tokens=2000,
-            response_format={"type": "json_object"},
-        )
-
-        return json.loads(response.choices[0].message.content)
-
-    def _prepare_agenda_text(self, agenda: Agenda) -> str:
-        """Prepare agenda data as text for the LLM."""
-        parts = [f"Meeting: {agenda.title}"]
-        parts.append(f"Date: {agenda.meeting_date.strftime('%B %d, %Y')}")
-        parts.append(f"Type: {agenda.meeting_type}")
-        parts.append("")
-
-        if agenda.raw_text:
-            # Use the raw PDF text if available
-            parts.append("--- Full Agenda Text ---")
-            parts.append(agenda.raw_text[:12000])  # Limit length
-        elif agenda.items:
-            parts.append("--- Agenda Items ---")
-            for i, item in enumerate(agenda.items, 1):
-                parts.append(f"{i}. [{item.category}] {item.title}")
-                if item.description:
-                    parts.append(f"   {item.description[:200]}")
-        else:
-            parts.append("(No detailed agenda items available)")
-
-        return "\n".join(parts)
 
     def _prepare_minutes_text(self, minutes: Minutes) -> str:
         """Prepare minutes data as text for the LLM."""

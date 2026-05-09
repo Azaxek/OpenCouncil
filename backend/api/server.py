@@ -2,8 +2,8 @@
 FastAPI server for Civic City Hub.
 
 Provides REST endpoints for:
-- Fetching agendas from connected cities
-- Auto-summarizing agendas via DeepSeek LLM (saved persistently for everyone to see)
+- Fetching minutes from connected cities
+- Auto-summarizing minutes via DeepSeek LLM (saved persistently for everyone to see)
 - Listing connected cities
 - IP-based city detection for the frontend
 - Health check
@@ -24,17 +24,10 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from connectors.laserfiche import LaserficheConnector
 from crypto_utils import get_api_key_from_env
-from models.schemas import Agenda, CityConfig, Minutes, SummaryRequest, SummaryResponse
+from models.schemas import CityConfig, Minutes, SummaryRequest, SummaryResponse
 from parsers.llm_summarizer import LLMSummarizer
 from storage import (
     init_db,
-    save_agenda,
-    get_agenda,
-    list_agendas as db_list_agendas,
-    save_summary,
-    get_summary,
-    list_summaries as db_list_summaries,
-    summary_exists,
     save_minutes,
     get_minutes,
     list_minutes as db_list_minutes,
@@ -107,28 +100,28 @@ def _detect_city_from_ip(request: Request) -> dict:
     }
 
 
-async def _auto_summarize(agenda: Agenda) -> Optional[SummaryResponse]:
-    """Auto-summarize an agenda and save persistently."""
+async def _auto_summarize_minutes(minutes: Minutes) -> Optional[SummaryResponse]:
+    """Auto-summarize minutes and save persistently."""
     global summarizer
-    if not summarizer or not agenda:
+    if not summarizer or not minutes:
         return None
 
     # Check if already summarized
-    if summary_exists(agenda.id):
-        print(f"[AUTO] Summary already exists for agenda {agenda.id}, skipping.")
-        return get_summary(agenda.id)
+    if minutes_summary_exists(minutes.id):
+        print(f"[AUTO] Summary already exists for minutes {minutes.id}, skipping.")
+        return get_minutes_summary(minutes.id)
 
     try:
-        print(f"[AUTO] Summarizing agenda {agenda.id}...")
-        summary = await summarizer.summarize_agenda(agenda)
-        save_summary(summary)
-        # Also attach summary text to the agenda itself
-        agenda.summary = summary.summary
-        save_agenda(agenda)
-        print(f"[AUTO] Summary saved persistently for agenda {agenda.id}")
+        print(f"[AUTO] Summarizing minutes {minutes.id}...")
+        summary = await summarizer.summarize_minutes(minutes)
+        save_minutes_summary(minutes.id, summary)
+        # Also attach summary text to the minutes itself
+        minutes.summary = summary.summary
+        save_minutes(minutes)
+        print(f"[AUTO] Minutes summary saved persistently for {minutes.id}")
         return summary
     except Exception as e:
-        print(f"[WARN] Auto-summarization failed for {agenda.id}: {e}")
+        print(f"[WARN] Auto-summarization failed for minutes {minutes.id}: {e}")
         return None
 
 
@@ -147,15 +140,30 @@ async def lifespan(app: FastAPI):
         state=PARIS_TX_CONFIG.state,
     )
 
-    # Initialize LLM summarizer with DeepSeek API key
-    # Supports both plaintext (DEEPSEEK_API_KEY) and encrypted (ENCRYPTED_DEEPSEEK_KEY + ENCRYPTION_KEY)
-    api_key = get_api_key_from_env()
-    if api_key:
-        summarizer = LLMSummarizer(api_key=api_key)
-        print("[OK] DeepSeek summarizer initialized")
+    # Initialize LLM summarizer with both DeepSeek and OpenAI keys
+    # DeepSeek: for text-based summarization (cheaper)
+    # OpenAI (GPT-4o Vision): for reading scanned document images (TIFF)
+    #
+    # DeepSeek key supports both plaintext (DEEPSEEK_API_KEY) and
+    # encrypted (ENCRYPTED_DEEPSEEK_KEY + ENCRYPTION_KEY) modes.
+    deepseek_key = get_api_key_from_env()
+    openai_key = os.getenv("OPENAI_API_KEY")
+
+    if deepseek_key or openai_key:
+        summarizer = LLMSummarizer(
+            deepseek_key=deepseek_key,
+            openai_key=openai_key,
+        )
+        providers = []
+        if deepseek_key:
+            providers.append("DeepSeek (text)")
+        if openai_key:
+            providers.append("GPT-4o Vision (scanned images)")
+        print(f"[OK] LLM summarizer initialized with: {', '.join(providers)}")
     else:
-        print("[WARN] No DEEPSEEK_API_KEY set. Summarization will be unavailable.")
-        print("       Set DEEPSEEK_API_KEY in your environment or .env file.")
+        print("[WARN] No API keys set. Summarization will be unavailable.")
+        print("       Set DEEPSEEK_API_KEY and/or OPENAI_API_KEY in your environment or .env file.")
+        print("       OPENAI_API_KEY enables GPT-4o Vision for reading scanned document images.")
         print("       For GitHub-safe deployment, set ENCRYPTED_DEEPSEEK_KEY + ENCRYPTION_KEY.")
 
     print(f"[OK] Civic City Hub API ready - serving {PARIS_TX_CONFIG.name}, {PARIS_TX_CONFIG.state}")
@@ -164,6 +172,8 @@ async def lifespan(app: FastAPI):
     # Cleanup
     if connector:
         await connector.close()
+    if summarizer:
+        await summarizer.close()
 
 
 app = FastAPI(
@@ -198,11 +208,17 @@ app.add_middleware(
 @app.get("/health")
 async def health():
     """Health check endpoint."""
+    providers = []
+    if summarizer:
+        if summarizer.openai_client:
+            providers.append("gpt-4o-vision")
+        if summarizer.deepseek_client:
+            providers.append("deepseek-text")
     return {
         "status": "ok",
         "city": f"{PARIS_TX_CONFIG.name}, {PARIS_TX_CONFIG.state}",
         "llm_available": summarizer is not None,
-        "llm_provider": "deepseek",
+        "llm_providers": providers,
         "storage": "postgresql" if USE_POSTGRES else "sqlite",
     }
 
@@ -226,162 +242,7 @@ async def list_cities():
     }
 
 
-# --- Agendas ---
-
-@app.get("/api/agendas")
-async def list_agendas(limit: int = Query(10, ge=1, le=50)):
-    """List recent agendas from the connected city."""
-    if not connector:
-        raise HTTPException(status_code=503, detail="Connector not initialized")
-
-    try:
-        # Try DB first
-        agendas = db_list_agendas(limit=limit)
-        if agendas:
-            return {"agendas": agendas, "city": PARIS_TX_CONFIG.name}
-
-        # Fall back to connector
-        agendas = await connector.list_agendas(limit=limit)
-        enriched = []
-        for a in agendas:
-            a["has_summary"] = summary_exists(a["id"])
-            enriched.append(a)
-        return {"agendas": enriched, "city": PARIS_TX_CONFIG.name}
-    except Exception as e:
-        raise HTTPException(status_code=502, detail=f"Failed to fetch agendas: {str(e)}")
-
-
-@app.get("/api/agendas/{agenda_id}")
-async def get_agenda(agenda_id: str):
-    """Get a specific agenda with full details and its summary if available."""
-    try:
-        # Check persistent storage first
-        agenda = get_agenda(agenda_id)
-        if agenda:
-            summary = get_summary(agenda_id)
-            # Return as dict to avoid Pydantic serialization issues
-            return {
-                "agenda": agenda.model_dump(mode="json"),
-                "summary": summary.model_dump(mode="json") if summary else None,
-            }
-    except Exception as e:
-        import traceback
-        print(f"[ERROR] DB lookup failed for agenda {agenda_id}: {type(e).__name__}: {e}")
-        traceback.print_exc()
-        # Fall through to fetch fresh
-
-    # Otherwise fetch fresh
-    if not connector:
-        raise HTTPException(status_code=503, detail="Connector not initialized")
-
-    try:
-        latest = await connector.get_latest_agenda()
-        if latest and latest.id == agenda_id:
-            save_agenda(latest)
-            # Auto-summarize if not already done
-            if summarizer and not summary_exists(agenda_id):
-                await _auto_summarize(latest)
-            return {
-                "agenda": latest,
-                "summary": get_summary(agenda_id),
-            }
-        else:
-            # Try to find it in the list
-            agendas = await connector.fetch_agenda_list()
-            for a in agendas:
-                if a["id"] == agenda_id:
-                    if a.get("document_url"):
-                        raw_text = await connector.fetch_agenda_document_text(a["document_url"])
-                        items = connector._parse_agenda_items_from_text(raw_text) if raw_text else []
-                        # Use timezone-aware datetime for meeting_date to avoid Pydantic validation issues
-                        meeting_date = a.get("meeting_date")
-                        if meeting_date is None:
-                            meeting_date = datetime.now(timezone.utc)
-                        agenda = Agenda(
-                            id=a["id"],
-                            city=PARIS_TX_CONFIG.name,
-                            state=PARIS_TX_CONFIG.state,
-                            meeting_date=meeting_date,
-                            title=a["title"],
-                            url=a["url"] or "",
-                            pdf_url=a.get("document_url"),
-                            document_url=a.get("document_url"),
-                            items=items,
-                            raw_text=raw_text,
-                        )
-                        save_agenda(agenda)
-                        # Auto-summarize if not already done
-                        if summarizer and not summary_exists(agenda_id):
-                            await _auto_summarize(agenda)
-                        return {
-                            "agenda": agenda,
-                            "summary": get_summary(agenda_id),
-                        }
-            raise HTTPException(status_code=404, detail=f"Agenda {agenda_id} not found")
-    except HTTPException:
-        raise
-    except Exception as e:
-        import traceback
-        traceback.print_exc()
-        print(f"[ERROR] Failed to fetch agenda {agenda_id}: {type(e).__name__}: {e}")
-        raise HTTPException(status_code=502, detail=f"Failed to fetch agenda: {str(e)}")
-
-
-@app.post("/api/agendas/fetch-latest")
-async def fetch_latest_agenda():
-    """Fetch and store the latest agenda from the connected city.
-    Auto-summarizes and saves the summary persistently so everyone can see it."""
-    if not connector:
-        raise HTTPException(status_code=503, detail="Connector not initialized")
-
-    try:
-        agenda = await connector.get_latest_agenda()
-        if not agenda:
-            raise HTTPException(status_code=404, detail="No agendas found")
-
-        save_agenda(agenda)
-
-        # Auto-summarize and save persistently
-        if summarizer:
-            await _auto_summarize(agenda)
-
-        return {
-            "agenda": agenda,
-            "summary": get_summary(agenda.id),
-        }
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=502, detail=f"Failed to fetch latest agenda: {str(e)}")
-
-
 # --- Minutes (official records of what happened) ---
-
-
-async def _auto_summarize_minutes(minutes: Minutes) -> Optional[SummaryResponse]:
-    """Auto-summarize minutes and save persistently."""
-    global summarizer
-    if not summarizer or not minutes:
-        return None
-
-    # Check if already summarized
-    if minutes_summary_exists(minutes.id):
-        print(f"[AUTO] Summary already exists for minutes {minutes.id}, skipping.")
-        return get_minutes_summary(minutes.id)
-
-    try:
-        print(f"[AUTO] Summarizing minutes {minutes.id}...")
-        summary = await summarizer.summarize_minutes(minutes)
-        save_minutes_summary(minutes.id, summary)
-        # Also attach summary text to the minutes itself
-        minutes.summary = summary.summary
-        save_minutes(minutes)
-        print(f"[AUTO] Minutes summary saved persistently for {minutes.id}")
-        return summary
-    except Exception as e:
-        print(f"[WARN] Auto-summarization failed for minutes {minutes.id}: {e}")
-        return None
-
 
 @app.get("/api/minutes")
 async def list_minutes(limit: int = Query(10, ge=1, le=50)):
@@ -436,16 +297,20 @@ async def get_minutes_endpoint(minutes_id: str):
             for m in minutes_list:
                 if m["id"] == minutes_id:
                     if m.get("document_url"):
-                        raw_text = await connector.fetch_agenda_document_text(m["document_url"])
+                        raw_text = await connector.fetch_document_text(m["document_url"])
+                        page_image_urls = await connector.fetch_page_image_urls(
+                            m["document_url"]
+                        )
                         minutes = Minutes(
                             id=m["id"],
                             city=PARIS_TX_CONFIG.name,
                             state=PARIS_TX_CONFIG.state,
-                            meeting_date=m["meeting_date"] or datetime.utcnow(),
+                            meeting_date=m["meeting_date"] or datetime.now(timezone.utc),
                             title=m["title"],
                             url=m["url"] or "",
                             document_url=m.get("document_url"),
                             raw_text=raw_text,
+                            page_image_urls=page_image_urls,
                         )
                         save_minutes(minutes)
                         # Auto-summarize if not already done
@@ -500,19 +365,19 @@ async def summarize_minutes_endpoint(request: SummaryRequest):
         )
 
     # Check persistent store first (so everyone sees the same summary)
-    existing = get_minutes_summary(request.agenda_id)
+    existing = get_minutes_summary(request.minutes_id)
     if existing:
         return existing
 
     # Get the minutes
-    minutes = get_minutes(request.agenda_id)
+    minutes = get_minutes(request.minutes_id)
     if not minutes:
         # Try to fetch it
         if not connector:
             raise HTTPException(status_code=503, detail="Connector not initialized")
         try:
             latest = await connector.get_latest_minutes()
-            if latest and latest.id == request.agenda_id:
+            if latest and latest.id == request.minutes_id:
                 minutes = latest
                 save_minutes(minutes)
             else:
@@ -528,81 +393,6 @@ async def summarize_minutes_endpoint(request: SummaryRequest):
         return summary
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"Summarization failed: {str(e)}")
-
-
-# --- Summarization ---
-
-@app.post("/api/summarize", response_model=SummaryResponse)
-async def summarize_agenda(request: SummaryRequest):
-    """Summarize an agenda using LLM. Results are saved persistently."""
-    if not summarizer:
-        raise HTTPException(
-            status_code=503,
-            detail="LLM summarizer not available. Set DEEPSEEK_API_KEY environment variable.",
-        )
-
-    # Check persistent store first (so everyone sees the same summary)
-    existing = get_summary(request.agenda_id)
-    if existing:
-        return existing
-
-    # Get the agenda
-    agenda = get_agenda(request.agenda_id)
-    if not agenda:
-        # Try to fetch it
-        if not connector:
-            raise HTTPException(status_code=503, detail="Connector not initialized")
-        try:
-            latest = await connector.get_latest_agenda()
-            if latest and latest.id == request.agenda_id:
-                agenda = latest
-                save_agenda(agenda)
-            else:
-                raise HTTPException(status_code=404, detail=f"Agenda {request.agenda_id} not found")
-        except HTTPException:
-            raise
-        except Exception as e:
-            raise HTTPException(status_code=502, detail=f"Failed to fetch agenda: {str(e)}")
-
-    try:
-        summary = await summarizer.summarize_agenda(agenda)
-        save_summary(summary)
-        return summary
-    except Exception as e:
-        raise HTTPException(status_code=502, detail=f"Summarization failed: {str(e)}")
-
-
-@app.post("/api/summarize/text")
-async def summarize_text(text: str, city: str = "Paris", state: str = "TX"):
-    """Summarize raw agenda text directly."""
-    if not summarizer:
-        raise HTTPException(
-            status_code=503,
-            detail="LLM summarizer not available. Set DEEPSEEK_API_KEY environment variable.",
-        )
-
-    try:
-        result = await summarizer.summarize_text(text, city=city, state=state)
-        return result
-    except Exception as e:
-        raise HTTPException(status_code=502, detail=f"Summarization failed: {str(e)}")
-
-
-# --- Summaries (shared, persistent) ---
-
-@app.get("/api/summaries")
-async def list_summaries():
-    """List all saved summaries (persistent, shared for everyone to see)."""
-    return {"summaries": db_list_summaries()}
-
-
-@app.get("/api/summaries/{agenda_id}")
-async def get_summary(agenda_id: str):
-    """Get a specific saved summary."""
-    summary = get_summary(agenda_id)
-    if not summary:
-        raise HTTPException(status_code=404, detail="Summary not found")
-    return summary
 
 
 # --- City Configuration ---

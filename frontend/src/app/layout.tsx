@@ -16,10 +16,10 @@ const jetbrainsMono = JetBrains_Mono({
 export const metadata: Metadata = {
   title: "Civic City Hub — Local Government, Explained",
   description:
-    "Making local government understandable. Plain-language summaries of city council agendas, budgets, and decisions for cities across America.",
+    "Making local government understandable. Plain-language summaries of city council minutes, budgets, and decisions for cities across America.",
   openGraph: {
     title: "Civic City Hub",
-    description: "Plain-language summaries of city council agendas, budgets, and decisions.",
+    description: "Plain-language summaries of city council minutes, budgets, and decisions.",
     type: "website",
   },
 };
@@ -52,7 +52,7 @@ export default function RootLayout({
               Making local government understandable for everyone.
             </p>
             <p className="mt-3 text-xs">
-              Data sourced from publicly available city council agendas.
+              Data sourced from publicly available city council minutes.
               Not affiliated with any government entity.
             </p>
           </div>

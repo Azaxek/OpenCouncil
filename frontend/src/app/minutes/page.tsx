@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
 
-interface AgendaListItem {
+interface MinutesListItem {
   id: string;
   title: string;
   meeting_date: string | null;
@@ -27,32 +27,32 @@ interface CityInfo {
 // Vercel: vercel.json routes /api/* to the Python serverless function
 const API_BASE = "";
 
-export default function AgendasPage() {
-  const [agendas, setAgendas] = useState<AgendaListItem[]>([]);
+export default function MinutesPage() {
+  const [minutesList, setMinutesList] = useState<MinutesListItem[]>([]);
   const [cityInfo, setCityInfo] = useState<CityInfo | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [fetching, setFetching] = useState(false);
 
-  const loadAgendas = useCallback(async () => {
+  const loadMinutes = useCallback(async () => {
     setLoading(true);
     setError(null);
     try {
-      const [agendasRes, cityRes] = await Promise.all([
-        fetch(`${API_BASE}/api/agendas?limit=20`),
+      const [minutesRes, cityRes] = await Promise.all([
+        fetch(`${API_BASE}/api/minutes?limit=20`),
         fetch(`${API_BASE}/api/detect-city`).catch(() => null),
       ]);
 
-      if (!agendasRes.ok) throw new Error(`API error: ${agendasRes.status}`);
-      const agendasData = await agendasRes.json();
-      setAgendas(agendasData.agendas || []);
+      if (!minutesRes.ok) throw new Error(`API error: ${minutesRes.status}`);
+      const minutesData = await minutesRes.json();
+      setMinutesList(minutesData.minutes || []);
 
       if (cityRes) {
         const cityData = await cityRes.json();
         setCityInfo(cityData.city);
       }
     } catch (e: unknown) {
-      const msg = e instanceof Error ? e.message : "Failed to load agendas";
+      const msg = e instanceof Error ? e.message : "Failed to load minutes";
       setError(msg);
     } finally {
       setLoading(false);
@@ -62,11 +62,11 @@ export default function AgendasPage() {
   const fetchLatest = async () => {
     setFetching(true);
     try {
-      const res = await fetch(`${API_BASE}/api/agendas/fetch-latest`, {
+      const res = await fetch(`${API_BASE}/api/minutes/fetch-latest`, {
         method: "POST",
       });
       if (!res.ok) throw new Error(`API error: ${res.status}`);
-      await loadAgendas();
+      await loadMinutes();
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : "Failed to fetch latest";
       setError(msg);
@@ -76,8 +76,8 @@ export default function AgendasPage() {
   };
 
   useEffect(() => {
-    loadAgendas();
-  }, [loadAgendas]);
+    loadMinutes();
+  }, [loadMinutes]);
 
   const formatDate = (dateStr: string | null) => {
     if (!dateStr) return "Date TBD";
@@ -100,10 +100,10 @@ export default function AgendasPage() {
       {/* Header */}
       <div>
         <h1 className="news-headline-xl" style={{ marginBottom: "0.5rem" }}>
-          City Council Agendas
+          City Council Minutes
         </h1>
         <p className="news-body" style={{ fontSize: "1rem" }}>
-          {cityName} — Recent and upcoming meeting agendas with AI-powered plain-language summaries
+          {cityName} — Official records of city council meetings with AI-powered plain-language summaries
         </p>
       </div>
 
@@ -112,9 +112,9 @@ export default function AgendasPage() {
       {/* Controls */}
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
         <span className="news-section-tag">
-          {agendas.length > 0
-            ? `${agendas.length} agenda${agendas.length !== 1 ? "s" : ""} found`
-            : "No agendas yet"}
+          {minutesList.length > 0
+            ? `${minutesList.length} minute${minutesList.length !== 1 ? "s" : ""} found`
+            : "No minutes yet"}
         </span>
         <button
           onClick={fetchLatest}
@@ -127,7 +127,7 @@ export default function AgendasPage() {
               Fetching...
             </>
           ) : (
-            <>🔄 Fetch Latest Agenda</>
+            <>🔄 Fetch Latest Minutes</>
           )}
         </button>
       </div>
@@ -144,7 +144,7 @@ export default function AgendasPage() {
           <p style={{ color: "var(--accent-red)", fontSize: "0.875rem", marginBottom: "0.75rem" }}>
             {error}
           </p>
-          <button onClick={loadAgendas} className="btn btn-secondary">
+          <button onClick={loadMinutes} className="btn btn-secondary">
             Retry
           </button>
         </div>
@@ -163,25 +163,25 @@ export default function AgendasPage() {
       )}
 
       {/* Empty state */}
-      {!loading && !error && agendas.length === 0 && (
+      {!loading && !error && minutesList.length === 0 && (
         <div className="article-card" style={{ padding: "3rem", textAlign: "center" }}>
           <p className="news-body" style={{ marginBottom: "1rem" }}>
-            No agendas found yet. Click &ldquo;Fetch Latest Agenda&rdquo; to pull the
-            most recent agenda from {cityName}.
+            No minutes found yet. Click &ldquo;Fetch Latest Minutes&rdquo; to pull the
+            most recent minutes from {cityName}.
           </p>
           <button onClick={fetchLatest} disabled={fetching} className="btn btn-primary">
-            Fetch Latest Agenda
+            Fetch Latest Minutes
           </button>
         </div>
       )}
 
-      {/* Agenda list */}
-      {!loading && agendas.length > 0 && (
+      {/* Minutes list */}
+      {!loading && minutesList.length > 0 && (
         <div className="space-y-3">
-          {agendas.map((agenda, index) => (
+          {minutesList.map((minutes, index) => (
             <Link
-              key={agenda.id}
-              href={`/agendas/${agenda.id}`}
+              key={minutes.id}
+              href={`/minutes/${minutes.id}`}
               style={{ textDecoration: "none" }}
             >
               <article
@@ -201,20 +201,20 @@ export default function AgendasPage() {
                       {index === 0 && (
                         <span className="badge badge-brand" style={{ fontSize: "0.625rem" }}>Latest</span>
                       )}
-                      {agenda.has_summary && (
+                      {minutes.has_summary && (
                         <span className="badge badge-green" style={{ fontSize: "0.625rem" }}>Summarized</span>
                       )}
                     </div>
                     <h3 className="news-headline-md" style={{ fontSize: "1.1rem" }}>
-                      {agenda.title}
+                      {minutes.title}
                     </h3>
                     <p className="news-byline" style={{ marginTop: "0.25rem" }}>
-                      {formatDate(agenda.meeting_date)}
-                      {agenda.meeting_type && ` — ${agenda.meeting_type}`}
+                      {formatDate(minutes.meeting_date)}
+                      {minutes.meeting_type && ` — ${minutes.meeting_type}`}
                     </p>
                   </div>
                   <div style={{ display: "flex", alignItems: "center", gap: "0.5rem", flexShrink: 0 }}>
-                    {agenda.document_url && (
+                    {minutes.document_url && (
                       <span className="badge badge-purple" style={{ fontSize: "0.625rem" }}>PDF</span>
                     )}
                     <span style={{ color: "var(--foreground-secondary)", fontSize: "1.25rem" }}>

@@ -11,7 +11,7 @@ interface HealthResponse {
   storage: string;
 }
 
-interface AgendaListItem {
+interface MinutesListItem {
   id: string;
   title: string;
   meeting_date: string | null;
@@ -43,7 +43,7 @@ const API_BASE = "";
 
 export default function HomePage() {
   const [health, setHealth] = useState<HealthResponse | null>(null);
-  const [agendas, setAgendas] = useState<AgendaListItem[]>([]);
+  const [minutesList, setMinutesList] = useState<MinutesListItem[]>([]);
   const [cityInfo, setCityInfo] = useState<CityInfo | null>(null);
   const [loading, setLoading] = useState(true);
 
@@ -57,15 +57,15 @@ export default function HomePage() {
       fetch(`${API_BASE}/api/detect-city`)
         .then((res) => res.json())
         .catch(() => null),
-      // Recent agendas
-      fetch(`${API_BASE}/api/agendas?limit=5`)
+      // Recent minutes
+      fetch(`${API_BASE}/api/minutes?limit=5`)
         .then((res) => res.json())
-        .catch(() => ({ agendas: [] })),
+        .catch(() => ({ minutes: [] })),
     ])
-      .then(([healthData, cityData, agendasData]) => {
+      .then(([healthData, cityData, minutesData]) => {
         setHealth(healthData);
         if (cityData) setCityInfo(cityData.city);
-        setAgendas(agendasData.agendas || []);
+        setMinutesList(minutesData.minutes || []);
         setLoading(false);
       })
       .catch(() => setLoading(false));
@@ -85,13 +85,13 @@ export default function HomePage() {
   };
 
   const cityName = cityInfo?.full_name || (cityInfo ? `${cityInfo.name}, ${cityInfo.state}` : "Paris, Texas");
-  const latestAgenda = agendas[0];
-  const otherAgendas = agendas.slice(1, 4);
+  const latestMinutes = minutesList[0];
+  const otherMinutes = minutesList.slice(1, 4);
 
   return (
     <div className="space-y-8">
       {/* ================================================================ */}
-      {/* TOP STORY — Featured Agenda                                       */}
+      {/* TOP STORY — Featured Minutes                                      */}
       {/* ================================================================ */}
       <section>
         {loading ? (
@@ -99,30 +99,30 @@ export default function HomePage() {
             <div className="skeleton h-8 w-1/3" />
             <div className="skeleton h-64 w-full" />
           </div>
-        ) : latestAgenda ? (
-          <Link href={`/agendas/${latestAgenda.id}`} style={{ textDecoration: "none" }}>
+        ) : latestMinutes ? (
+          <Link href={`/minutes/${latestMinutes.id}`} style={{ textDecoration: "none" }}>
             <article
               className="article-card article-card-featured"
               style={{ padding: "2rem" }}
             >
               <div style={{ display: "flex", flexDirection: "column", gap: "1rem" }}>
                 <div style={{ display: "flex", alignItems: "center", gap: "0.75rem" }}>
-                  <span className="news-section-tag">Featured Agenda</span>
-                  {latestAgenda.has_summary && (
+                  <span className="news-section-tag">Featured Minutes</span>
+                  {latestMinutes.has_summary && (
                     <span className="badge badge-brand">AI Summary Available</span>
                   )}
                 </div>
                 <h2 className="news-headline-xl">
-                  {latestAgenda.title}
+                  {latestMinutes.title}
                 </h2>
                 <div className="news-byline">
-                  {cityName} — {formatDate(latestAgenda.meeting_date)}
-                  {latestAgenda.meeting_type && ` — ${latestAgenda.meeting_type}`}
+                  {cityName} — {formatDate(latestMinutes.meeting_date)}
+                  {latestMinutes.meeting_type && ` — ${latestMinutes.meeting_type}`}
                 </div>
                 <p className="news-body" style={{ marginTop: "0.5rem" }}>
-                  {latestAgenda.has_summary
-                    ? "An AI-powered plain-language summary is available for this agenda. Read the key decisions, budget items, and public comment opportunities."
-                    : "View the full agenda with AI-powered plain-language summaries of each item."}
+                  {latestMinutes.has_summary
+                    ? "An AI-powered plain-language summary is available for these minutes. Read the key decisions, budget items, and public comment opportunities."
+                    : "View the full meeting minutes with AI-powered plain-language summaries."}
                 </p>
                 <div>
                   <span className="btn btn-primary">
@@ -141,7 +141,7 @@ export default function HomePage() {
               Welcome to Civic City Hub
             </h2>
             <p className="news-body">
-              We're currently fetching the latest agenda from {cityName}.
+              We're currently fetching the latest minutes from {cityName}.
               Check back soon for plain-language summaries of city council meetings.
             </p>
           </article>
@@ -149,29 +149,29 @@ export default function HomePage() {
       </section>
 
       {/* ================================================================ */}
-      {/* NEWS GRID — More Agendas + Sidebar                                */}
+      {/* NEWS GRID — More Minutes + Sidebar                                */}
       {/* ================================================================ */}
       <div className="news-layout">
         {/* Main content */}
         <div className="space-y-6">
           {/* Section header */}
           <div className="section-header">
-            <span className="news-section-tag">Latest Agendas</span>
+            <span className="news-section-tag">Latest Minutes</span>
           </div>
 
-          {/* Agenda cards */}
+          {/* Minutes cards */}
           {loading ? (
             <div className="space-y-4">
               {[1, 2, 3].map((i) => (
                 <div key={i} className="skeleton h-24 w-full" />
               ))}
             </div>
-          ) : otherAgendas.length > 0 ? (
+          ) : otherMinutes.length > 0 ? (
             <div className="space-y-4">
-              {otherAgendas.map((agenda) => (
+              {otherMinutes.map((minutes) => (
                 <Link
-                  key={agenda.id}
-                  href={`/agendas/${agenda.id}`}
+                  key={minutes.id}
+                  href={`/minutes/${minutes.id}`}
                   style={{ textDecoration: "none" }}
                 >
                   <article className="article-card" style={{ padding: "1.25rem" }}>
@@ -185,15 +185,15 @@ export default function HomePage() {
                     >
                       <div style={{ flex: 1, minWidth: 0 }}>
                         <h3 className="news-headline-md" style={{ marginBottom: "0.25rem" }}>
-                          {agenda.title}
+                          {minutes.title}
                         </h3>
                         <p className="news-byline">
-                          {formatDate(agenda.meeting_date)}
-                          {agenda.meeting_type && ` — ${agenda.meeting_type}`}
+                          {formatDate(minutes.meeting_date)}
+                          {minutes.meeting_type && ` — ${minutes.meeting_type}`}
                         </p>
                       </div>
                       <div style={{ display: "flex", alignItems: "center", gap: "0.5rem", flexShrink: 0 }}>
-                        {agenda.has_summary && (
+                        {minutes.has_summary && (
                           <span className="badge badge-brand">AI</span>
                         )}
                         <span style={{ color: "var(--foreground-secondary)", fontSize: "0.875rem" }}>
@@ -208,19 +208,19 @@ export default function HomePage() {
           ) : (
             <div className="article-card" style={{ padding: "2rem", textAlign: "center" }}>
               <p className="news-body" style={{ marginBottom: "1rem" }}>
-                No agendas available yet.
+                No minutes available yet.
               </p>
-              <Link href="/agendas" className="btn btn-primary">
-                Browse Agendas
+              <Link href="/minutes" className="btn btn-primary">
+                Browse Minutes
               </Link>
             </div>
           )}
 
           {/* View all link */}
-          {agendas.length > 0 && (
+          {minutesList.length > 0 && (
             <div style={{ textAlign: "center" }}>
-              <Link href="/agendas" className="btn btn-secondary">
-                View All Agendas →
+              <Link href="/minutes" className="btn btn-secondary">
+                View All Minutes →
               </Link>
             </div>
           )}
@@ -266,8 +266,8 @@ export default function HomePage() {
             <h3>How It Works</h3>
             <div style={{ display: "flex", flexDirection: "column", gap: "0.75rem" }}>
               {[
-                { step: "1", text: "City publishes agenda on their website" },
-                { step: "2", text: "We fetch and parse the PDF automatically" },
+                { step: "1", text: "City publishes meeting minutes on their website" },
+                { step: "2", text: "We fetch and parse the document automatically" },
                 { step: "3", text: "AI translates legalese into plain English" },
                 { step: "4", text: "You stay informed about your local government" },
               ].map((item) => (
@@ -295,13 +295,13 @@ export default function HomePage() {
                 <span className="news-headline-md" style={{ fontSize: "1rem" }}>1</span>
               </div>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                <span style={{ fontSize: "0.8125rem", color: "var(--foreground-secondary)" }}>Agendas Tracked</span>
-                <span className="news-headline-md" style={{ fontSize: "1rem" }}>{agendas.length}</span>
+                <span style={{ fontSize: "0.8125rem", color: "var(--foreground-secondary)" }}>Minutes Tracked</span>
+                <span className="news-headline-md" style={{ fontSize: "1rem" }}>{minutesList.length}</span>
               </div>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                 <span style={{ fontSize: "0.8125rem", color: "var(--foreground-secondary)" }}>Summaries</span>
                 <span className="news-headline-md" style={{ fontSize: "1rem" }}>
-                  {agendas.filter((a) => a.has_summary).length}
+                  {minutesList.filter((a) => a.has_summary).length}
                 </span>
               </div>
             </div>
@@ -318,7 +318,7 @@ export default function HomePage() {
           About Civic City Hub
         </h2>
         <p className="news-body" style={{ marginBottom: "1rem" }}>
-          City council agendas are full of jargon and legalese. We use AI to translate them
+          City council minutes are full of jargon and legalese. We use AI to translate them
           into plain English so you know what's happening in your city — and when to speak up.
         </p>
         <p className="news-body" style={{ fontSize: "0.9375rem" }}>

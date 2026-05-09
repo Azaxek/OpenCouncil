@@ -3,16 +3,7 @@
 import Link from "next/link";
 import { use, useEffect, useState } from "react";
 
-interface AgendaItem {
-  title: string;
-  description: string | null;
-  category: string | null;
-  department: string | null;
-  plain_language_summary: string | null;
-  budget_impact: string | null;
-}
-
-interface AgendaDetail {
+interface MinutesDetail {
   id: string;
   city: string;
   state: string;
@@ -20,9 +11,8 @@ interface AgendaDetail {
   meeting_type: string;
   title: string;
   url: string;
-  pdf_url: string | null;
   document_url: string | null;
-  items: AgendaItem[];
+  raw_text: string | null;
   summary: string | null;
   source: string;
 }
@@ -58,13 +48,13 @@ interface SummaryData {
 // Vercel: vercel.json routes /api/* to the Python serverless function
 const API_BASE = "";
 
-export default function AgendaDetailPage({
+export default function MinutesDetailPage({
   params,
 }: {
   params: Promise<{ id: string }>;
 }) {
   const { id } = use(params);
-  const [agenda, setAgenda] = useState<AgendaDetail | null>(null);
+  const [minutes, setMinutes] = useState<MinutesDetail | null>(null);
   const [summary, setSummary] = useState<SummaryData | null>(null);
   const [loading, setLoading] = useState(true);
   const [summarizing, setSummarizing] = useState(false);
@@ -72,23 +62,23 @@ export default function AgendaDetailPage({
 
   useEffect(() => {
     setLoading(true);
-    fetch(`${API_BASE}/api/agendas/${id}`)
+    fetch(`${API_BASE}/api/minutes/${id}`)
       .then((res) => {
         if (!res.ok) throw new Error(`API error: ${res.status}`);
         return res.json();
       })
       .then((data) => {
-        // The API returns { agenda, summary }
-        if (data.agenda) {
-          setAgenda(data.agenda);
+        // The API returns { minutes, summary }
+        if (data.minutes) {
+          setMinutes(data.minutes);
           setSummary(data.summary || null);
         } else {
-          setAgenda(data);
+          setMinutes(data);
         }
         setLoading(false);
       })
       .catch((e: unknown) => {
-        const msg = e instanceof Error ? e.message : "Failed to load agenda";
+        const msg = e instanceof Error ? e.message : "Failed to load minutes";
         setError(msg);
         setLoading(false);
       });
@@ -97,10 +87,10 @@ export default function AgendaDetailPage({
   const handleSummarize = async () => {
     setSummarizing(true);
     try {
-      const res = await fetch(`${API_BASE}/api/summarize`, {
+      const res = await fetch(`${API_BASE}/api/minutes/summarize`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ agenda_id: id, model: "deepseek-chat" }),
+        body: JSON.stringify({ minutes_id: id, model: "deepseek-chat" }),
       });
       if (!res.ok) throw new Error(`API error: ${res.status}`);
       const data = await res.json();
@@ -145,11 +135,11 @@ export default function AgendaDetailPage({
     return (
       <div className="space-y-6">
         <Link
-          href="/agendas"
+          href="/minutes"
           className="news-byline"
           style={{ textDecoration: "none", display: "inline-block" }}
         >
-          ← Back to agendas
+          ← Back to minutes
         </Link>
         <div className="skeleton h-10 w-3/4" />
         <div className="skeleton h-4 w-1/2" />
@@ -167,11 +157,11 @@ export default function AgendaDetailPage({
     return (
       <div className="space-y-4">
         <Link
-          href="/agendas"
+          href="/minutes"
           className="news-byline"
           style={{ textDecoration: "none", display: "inline-block" }}
         >
-          ← Back to agendas
+          ← Back to minutes
         </Link>
         <div
           className="article-card"
@@ -184,18 +174,18 @@ export default function AgendaDetailPage({
   }
 
   // --- Not Found ---
-  if (!agenda) {
+  if (!minutes) {
     return (
       <div className="space-y-4">
         <Link
-          href="/agendas"
+          href="/minutes"
           className="news-byline"
           style={{ textDecoration: "none", display: "inline-block" }}
         >
-          ← Back to agendas
+          ← Back to minutes
         </Link>
         <div className="article-card" style={{ padding: "3rem", textAlign: "center" }}>
-          <p className="news-body">Agenda not found.</p>
+          <p className="news-body">Minutes not found.</p>
         </div>
       </div>
     );
@@ -208,31 +198,31 @@ export default function AgendaDetailPage({
       {/* ================================================================ */}
       <header>
         <Link
-          href="/agendas"
+          href="/minutes"
           className="news-byline"
           style={{ textDecoration: "none", display: "inline-block", marginBottom: "1rem" }}
         >
-          ← Back to agendas
+          ← Back to minutes
         </Link>
 
         <div style={{ display: "flex", alignItems: "center", gap: "0.75rem", marginBottom: "0.75rem" }}>
-          <span className="badge badge-brand">{agenda.meeting_type}</span>
+          <span className="badge badge-brand">{minutes.meeting_type}</span>
           {summary && <span className="badge badge-green">AI Summary Available</span>}
         </div>
 
         <h1 className="news-headline-xl" style={{ marginBottom: "0.75rem" }}>
-          {agenda.title}
+          {minutes.title}
         </h1>
 
         <div className="news-byline" style={{ marginBottom: "1rem" }}>
-          {formatDate(agenda.meeting_date)} — {agenda.city}, {agenda.state}
+          {formatDate(minutes.meeting_date)} — {minutes.city}, {minutes.state}
         </div>
 
         {/* Action buttons */}
         <div style={{ display: "flex", gap: "0.75rem", flexWrap: "wrap" }}>
-          {agenda.document_url && (
+          {minutes.document_url && (
             <a
-              href={agenda.document_url}
+              href={minutes.document_url}
               target="_blank"
               rel="noopener noreferrer"
               className="btn btn-secondary"
@@ -241,7 +231,7 @@ export default function AgendaDetailPage({
             </a>
           )}
           <a
-            href={agenda.url}
+            href={minutes.url}
             target="_blank"
             rel="noopener noreferrer"
             className="btn btn-secondary"
@@ -432,82 +422,35 @@ export default function AgendaDetailPage({
         {!summary && !summarizing && (
           <p className="news-body" style={{ textAlign: "center", padding: "2rem 0", fontSize: "0.9375rem" }}>
             Click &ldquo;Generate Summary&rdquo; to get an AI-powered plain-language
-            explanation of this agenda.
+            explanation of these minutes.
           </p>
         )}
       </section>
 
       {/* ================================================================ */}
-      {/* AGENDA ITEMS                                                      */}
+      {/* RAW TEXT SECTION                                                  */}
       {/* ================================================================ */}
-      <section>
-        <div className="section-header">
-          <span className="news-section-tag">Agenda Items</span>
-          <span style={{ fontSize: "0.8125rem", color: "var(--foreground-secondary)" }}>
-            {agenda.items.length} item{agenda.items.length !== 1 ? "s" : ""}
-          </span>
-        </div>
-
-        {agenda.items.length === 0 ? (
-          <div className="article-card" style={{ padding: "2rem", textAlign: "center" }}>
-            <p className="news-body" style={{ fontSize: "0.9375rem" }}>
-              No individual agenda items parsed. View the original PDF for full details.
-            </p>
+      {minutes.raw_text && (
+        <section>
+          <div className="section-header">
+            <span className="news-section-tag">Document Text</span>
           </div>
-        ) : (
-          <div className="space-y-3">
-            {agenda.items.map((item, i) => (
-              <div key={i} className="article-card" style={{ padding: "1.25rem" }}>
-                <div style={{ display: "flex", gap: "0.75rem" }}>
-                  <span
-                    style={{
-                      fontSize: "0.75rem",
-                      color: "var(--foreground-secondary)",
-                      fontFamily: "var(--font-mono)",
-                      minWidth: "1.5rem",
-                      textAlign: "right",
-                    }}
-                  >
-                    {i + 1}.
-                  </span>
-                  <div style={{ flex: 1, minWidth: 0 }}>
-                    <div style={{ display: "flex", alignItems: "center", gap: "0.5rem", flexWrap: "wrap", marginBottom: "0.25rem" }}>
-                      <h3 className="news-headline-md" style={{ fontSize: "0.9375rem" }}>
-                        {item.title}
-                      </h3>
-                      {item.category && (
-                        <span className={`badge ${categoryBadge(item.category)}`}>
-                          {item.category}
-                        </span>
-                      )}
-                    </div>
-                    {item.description && (
-                      <p className="news-body" style={{ fontSize: "0.875rem", marginTop: "0.25rem" }}>
-                        {item.description}
-                      </p>
-                    )}
-                    {item.plain_language_summary && (
-                      <p
-                        style={{
-                          fontSize: "0.875rem",
-                          color: "var(--brand)",
-                          marginTop: "0.5rem",
-                          fontStyle: "italic",
-                          padding: "0.5rem 0.75rem",
-                          background: "var(--brand-light)",
-                          borderRadius: "0.375rem",
-                        }}
-                      >
-                        💡 {item.plain_language_summary}
-                      </p>
-                    )}
-                  </div>
-                </div>
-              </div>
-            ))}
+          <div
+            className="article-card"
+            style={{
+              padding: "1.25rem",
+              maxHeight: "400px",
+              overflowY: "auto",
+              fontFamily: "var(--font-mono)",
+              fontSize: "0.8125rem",
+              whiteSpace: "pre-wrap",
+              lineHeight: 1.6,
+            }}
+          >
+            {minutes.raw_text}
           </div>
-        )}
-      </section>
+        </section>
+      )}
     </article>
   );
 }

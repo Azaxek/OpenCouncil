@@ -152,7 +152,7 @@ export function Header() {
                 Home
               </Link>
               <Link
-                href="/agendas"
+                href="/minutes"
                 className="nav-link"
                 style={{
                   fontSize: "0.8125rem",
@@ -161,7 +161,7 @@ export function Header() {
                   transition: "color 0.15s",
                 }}
               >
-                Agendas
+                Minutes
               </Link>
             </nav>
 
