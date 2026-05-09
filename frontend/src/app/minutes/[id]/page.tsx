@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { use, useEffect, useState } from "react";
+import { useRouter } from "next/navigation";
 
 interface MinutesDetail {
   id: string;
@@ -54,6 +55,7 @@ export default function MinutesDetailPage({
   params: Promise<{ id: string }>;
 }) {
   const { id } = use(params);
+  const router = useRouter();
   const [minutes, setMinutes] = useState<MinutesDetail | null>(null);
   const [summary, setSummary] = useState<SummaryData | null>(null);
   const [loading, setLoading] = useState(true);
@@ -61,13 +63,21 @@ export default function MinutesDetailPage({
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
+    let cancelled = false;
     setLoading(true);
     fetch(`${API_BASE}/api/minutes/${id}`)
       .then((res) => {
+        if (res.status === 404) {
+          // Minutes ID no longer exists (e.g., after database reset).
+          // Redirect to minutes list to break the retry cycle.
+          router.replace("/minutes");
+          return null;
+        }
         if (!res.ok) throw new Error(`API error: ${res.status}`);
         return res.json();
       })
       .then((data) => {
+        if (cancelled || data === null) return;
         // The API returns { minutes, summary }
         if (data.minutes) {
           setMinutes(data.minutes);
@@ -78,11 +88,13 @@ export default function MinutesDetailPage({
         setLoading(false);
       })
       .catch((e: unknown) => {
+        if (cancelled) return;
         const msg = e instanceof Error ? e.message : "Failed to load minutes";
         setError(msg);
         setLoading(false);
       });
-  }, [id]);
+    return () => { cancelled = true; };
+  }, [id, router]);
 
   const handleSummarize = async () => {
     setSummarizing(true);
