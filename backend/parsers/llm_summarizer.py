@@ -129,10 +129,12 @@ class LLMSummarizer:
 
     # Garbled text detection thresholds
     # If quality score is below GARBLED_THRESHOLD, a quality warning is added to the prompt
-    GARBLED_THRESHOLD = 0.4
-    # If quality score is below UNREADABLE_THRESHOLD, skip LLM entirely and return canned response
-    # This prevents LLM hallucination on completely unreadable text
-    UNREADABLE_THRESHOLD = 0.2
+    GARBLED_THRESHOLD = 0.3
+    # If quality score is below UNREADABLE_THRESHOLD, skip LLM entirely and return canned response.
+    # Set to 0.0 to NEVER skip the LLM — the system prompt already handles garbled text
+    # by telling the LLM to return empty arrays rather than hallucinate.
+    # The LLM is far better at extracting partial meaning from noisy OCR than any heuristic.
+    UNREADABLE_THRESHOLD = 0.0
 
     # Minimum character threshold for considering OCR successful.
     # If an engine produces fewer chars than this, other engines will still be tried.
@@ -384,12 +386,18 @@ class LLMSummarizer:
         - Average word length
         - Frequency of repeated characters
         - Frequency of non-alphanumeric symbols
+
+        NOTE: This is a SOFT guard — it only adds a warning to the LLM prompt.
+        The UNREADABLE_THRESHOLD is set to 0.0 so the LLM always gets a chance
+        to extract meaning from noisy OCR text. The system prompt already handles
+        garbled text by telling the LLM to return empty arrays rather than hallucinate.
         """
         if not text or not text.strip():
             return True, 0.0
 
-        # Count various character types
-        total_chars = len(text.strip())
+        # Count various character types — use the full text (not stripped)
+        # to get accurate ratios including whitespace
+        total_chars = len(text)
         if total_chars == 0:
             return True, 0.0
 
@@ -398,8 +406,11 @@ class LLMSummarizer:
         space_chars = sum(1 for c in text if c.isspace())
         symbol_chars = sum(1 for c in text if not c.isalnum() and not c.isspace())
 
-        alpha_ratio = alpha_chars / total_chars if total_chars > 0 else 0
-        symbol_ratio = symbol_chars / total_chars if total_chars > 0 else 0
+        # Use non-space chars as denominator for alpha/symbol ratios
+        # (spaces inflate total_chars and dilute the ratios)
+        nonspace_chars = total_chars - space_chars
+        alpha_ratio = alpha_chars / nonspace_chars if nonspace_chars > 0 else 0
+        symbol_ratio = symbol_chars / nonspace_chars if nonspace_chars > 0 else 0
 
         # Check for long unbroken strings (no spaces)
         words = text.split()
@@ -413,40 +424,45 @@ class LLMSummarizer:
         # Check for repeated character patterns (OCR artifact)
         repeated_patterns = len(re.findall(r'(.)\1{3,}', text))
 
-        # Scoring
+        # Scoring — start at 1.0 (perfect) and penalize
         score = 1.0
 
         # Penalize low alpha ratio (should be >60% for English text)
-        if alpha_ratio < 0.4:
-            score -= 0.5
-        elif alpha_ratio < 0.6:
-            score -= 0.2
+        if alpha_ratio < 0.3:
+            score -= 0.3
+        elif alpha_ratio < 0.5:
+            score -= 0.15
 
         # Penalize high symbol ratio
-        if symbol_ratio > 0.3:
-            score -= 0.3
-        elif symbol_ratio > 0.15:
+        if symbol_ratio > 0.4:
+            score -= 0.2
+        elif symbol_ratio > 0.25:
             score -= 0.1
 
         # Penalize very long average words (OCR merging words)
-        if avg_word_len > 15:
-            score -= 0.3
-        elif avg_word_len > 10:
+        if avg_word_len > 20:
+            score -= 0.2
+        elif avg_word_len > 15:
             score -= 0.1
 
         # Penalize extremely long words
-        if max_word_len > 30:
-            score -= 0.2
+        if max_word_len > 40:
+            score -= 0.15
 
         # Penalize repeated character patterns
-        if repeated_patterns > 5:
-            score -= 0.2
+        if repeated_patterns > 10:
+            score -= 0.15
 
         # Penalize very short text
-        if total_chars < 50:
-            score -= 0.3
+        if total_chars < 100:
+            score -= 0.2
+        elif total_chars < 200:
+            score -= 0.1
 
-        is_garbled = score < 0.4
+        # Clamp score to [0.0, 1.0]
+        score = max(0.0, min(1.0, score))
+
+        is_garbled = score < self.GARBLED_THRESHOLD
 
         if is_garbled:
             print(f"[OCR QUALITY] Text appears garbled (score: {score:.2f}): "
@@ -454,7 +470,7 @@ class LLMSummarizer:
                   f"avg_word_len={avg_word_len:.1f}, max_word_len={max_word_len}, "
                   f"repeated_patterns={repeated_patterns}")
 
-        return is_garbled, max(0.0, min(1.0, score))
+        return is_garbled, score
 
     def _build_unreadable_response(
         self, minutes: Minutes, reason: str = "unreadable"
