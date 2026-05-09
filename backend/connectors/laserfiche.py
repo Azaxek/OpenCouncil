@@ -357,64 +357,105 @@ class LaserficheConnector:
     async def fetch_page_images(
         self, document_url: str
     ) -> list[bytes]:
-        """Download actual page image bytes from Laserfiche.
+        """Download actual page images from Laserfiche via PDF generation.
 
-        Visits the docview.aspx page to get session cookies, then
-        downloads each page image via the Page.aspx URL pattern.
+        Strategy (more reliable than direct page image download):
+        1. Visit docview.aspx to establish session cookies
+        2. POST to GeneratePDF.aspx to generate a PDF of the document
+        3. Use PyMuPDF (fitz) to render each PDF page to a PIL Image
+        4. Return the image bytes for Tesseract OCR
 
-        Returns a list of raw image bytes (one per page), which can
-        be processed by Tesseract OCR.
+        This avoids the CookieCheck.aspx redirect issue that plagues
+        direct Page.aspx image downloads.
         """
         if not document_url:
             return []
 
-        # First, visit the docview page to establish session cookies
+        # Extract docId from the URL
+        doc_id = None
+        match = re.search(r"id=(\d+)", document_url)
+        if match:
+            doc_id = match.group(1)
+
+        if not doc_id:
+            print("[WARN] Could not extract docId from document URL")
+            return []
+
+        # Step 1: Visit docview.aspx to establish session cookies
         try:
-            response = await self.client.get(document_url)
-            response.raise_for_status()
-            html = response.text
+            await self.client.get(document_url)
         except Exception as e:
             print(f"[WARN] Error accessing document viewer: {e}")
+            # Continue anyway — cookies might not be needed for GeneratePDF
+
+        # Step 2: POST to GeneratePDF.aspx to get a PDF
+        gen_url = f"{self.base_url}/GeneratePDF.aspx"
+        try:
+            pdf_response = await self.client.post(
+                gen_url,
+                data={
+                    "id": doc_id,
+                    "dbid": DBID,
+                    "pageFrom": "1",
+                    "pageTo": "999",  # Request all pages
+                },
+                headers={
+                    "Content-Type": "application/x-www-form-urlencoded",
+                },
+                timeout=60.0,  # PDF generation can be slow
+            )
+            pdf_response.raise_for_status()
+
+            content_type = pdf_response.headers.get("content-type", "")
+            pdf_bytes = pdf_response.content
+
+            if not pdf_bytes or len(pdf_bytes) < 100:
+                print(f"[WARN] GeneratePDF returned empty or too small response ({len(pdf_bytes)} bytes)")
+                return []
+
+            # Check if we got HTML (error page) instead of PDF
+            if b"<html" in pdf_bytes[:100].lower() or b"<!DOCTYPE" in pdf_bytes[:100]:
+                print(f"[WARN] GeneratePDF returned HTML instead of PDF (likely an error page)")
+                print(f"[WARN] Response preview: {pdf_bytes[:300]}")
+                return []
+
+            print(f"[PDF] Generated PDF: {len(pdf_bytes)} bytes, Content-Type: {content_type}")
+
+        except Exception as e:
+            print(f"[WARN] GeneratePDF POST failed: {e}")
             return []
 
-        # Extract page image URLs
-        page_urls = self._extract_page_image_urls(html, document_url)
-        if not page_urls:
-            print("[WARN] No page image URLs found in document viewer")
-            return []
-
-        # Download each page image
+        # Step 3: Render PDF pages to images using PyMuPDF
         images: list[bytes] = []
-        for url in page_urls:
-            try:
-                img_response = await self.client.get(url)
-                img_response.raise_for_status()
-                images.append(img_response.content)
-            except Exception as e:
-                print(f"[WARN] Error downloading page image {url}: {e}")
-                # Try alternative: access the page via docview with page parameter
-                try:
-                    # Extract docId and page number from URL
-                    match = re.search(r"Page(\d+)\.aspx", url)
-                    page_num = match.group(1) if match else "1"
-                    match = re.search(r"/doc/(\d+)/", url)
-                    doc_id = match.group(1) if match else ""
+        try:
+            import fitz  # PyMuPDF
 
-                    if doc_id:
-                        # Try accessing via docview.aspx with page parameter
-                        alt_url = (
-                            f"{self.base_url}/docview.aspx"
-                            f"?id={doc_id}&dbid={DBID}&page={page_num}"
-                        )
-                        alt_response = await self.client.get(alt_url)
-                        alt_response.raise_for_status()
-                        # The page HTML might contain the image data
-                        # embedded in a script or data URL
-                        images.append(alt_response.content)
-                except Exception as e2:
-                    print(
-                        f"[WARN] Alternative download also failed: {e2}"
-                    )
+            pdf_doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+            num_pages = len(pdf_doc)
+            print(f"[PDF] Rendering {num_pages} pages from PDF")
+
+            for page_num in range(num_pages):
+                try:
+                    page = pdf_doc[page_num]
+                    # Render at 300 DPI for good OCR quality
+                    zoom = 300 / 72  # 72 is default PDF DPI
+                    mat = fitz.Matrix(zoom, zoom)
+                    pix = page.get_pixmap(matrix=mat)
+                    img_bytes = pix.tobytes("png")
+                    images.append(img_bytes)
+                    print(f"[PDF] Rendered page {page_num + 1}: {len(img_bytes)} bytes")
+                except Exception as e:
+                    print(f"[WARN] Failed to render page {page_num + 1}: {e}")
+
+            pdf_doc.close()
+
+        except ImportError:
+            print("[WARN] PyMuPDF (fitz) not installed. Cannot render PDF pages.")
+            print("       Install with: pip install PyMuPDF")
+            return []
+        except Exception as e:
+            print(f"[WARN] Failed to render PDF pages: {e}")
+            return []
 
         return images
 
