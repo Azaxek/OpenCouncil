@@ -587,9 +587,18 @@ class LaserficheConnector:
             raw_text = await self.fetch_document_text(
                 latest["document_url"]
             )
-            page_image_urls = await self.fetch_page_image_urls(
-                latest["document_url"]
-            )
+            # Extract page image URLs from the raw_text that was already fetched
+            # (avoids a second HTTP request that might get different HTML)
+            if raw_text:
+                for line in raw_text.split("\n"):
+                    match = re.search(r'\[Page \d+: (.+)\]', line)
+                    if match:
+                        page_image_urls.append(match.group(1))
+            # Fall back to direct fetch if raw_text had no URLs
+            if not page_image_urls:
+                page_image_urls = await self.fetch_page_image_urls(
+                    latest["document_url"]
+                )
 
         # Determine meeting type from title
         title_lower = (latest["title"] or "").lower()

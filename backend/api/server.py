@@ -14,6 +14,7 @@ API keys support encrypted storage for safe GitHub commits.
 
 import json
 import os
+import re
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -309,9 +310,17 @@ async def get_minutes_endpoint(minutes_id: str):
                 if m["id"] == minutes_id:
                     if m.get("document_url"):
                         raw_text = await connector.fetch_document_text(m["document_url"])
-                        page_image_urls = await connector.fetch_page_image_urls(
-                            m["document_url"]
-                        )
+                        # Extract page image URLs from raw_text to avoid a second HTTP request
+                        page_image_urls: list[str] = []
+                        if raw_text:
+                            for line in raw_text.split("\n"):
+                                match = re.search(r'\[Page \d+: (.+)\]', line)
+                                if match:
+                                    page_image_urls.append(match.group(1))
+                        if not page_image_urls:
+                            page_image_urls = await connector.fetch_page_image_urls(
+                                m["document_url"]
+                            )
                         minutes = Minutes(
                             id=m["id"],
                             city=PARIS_TX_CONFIG.name,
