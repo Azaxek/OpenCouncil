@@ -108,11 +108,13 @@ REMEMBER: Empty arrays are CORRECT. Fabricated data is WRONG. If in doubt, retur
 class LLMSummarizer:
     """Summarizes city council minutes using LLM APIs.
 
-    Supports two modes:
-    - Text mode (DeepSeek): For documents with extractable text content
-    - OCR mode (Tesseract + DeepSeek): For scanned document images (TIFF) from Laserfiche
-      Uses free, open-source Tesseract OCR to extract text from images,
-      then passes the text to DeepSeek for summarization.
+    Supports three modes (in priority order):
+    1. EasyOCR mode (primary): Deep-learning based OCR (MIT license).
+       Significantly better accuracy than Tesseract on scanned documents.
+       Supports English + French natively.
+    2. Tesseract OCR mode (fallback): For scanned document images (TIFF) from Laserfiche.
+       Free, open-source, used when EasyOCR is not available.
+    3. Text mode (DeepSeek): For documents with extractable text content.
 
     Falls back to text mode if no page images are available.
     """
@@ -120,8 +122,10 @@ class LLMSummarizer:
     # Maximum characters to send to the LLM from OCR text
     MAX_OCR_TEXT_CHARS = 30000
 
-    # Tesseract OCR languages for Paris, TX — English + French for French-influenced names
-    OCR_LANGUAGES = "eng+fra"
+    # OCR languages for Paris, TX — English + French for French-influenced names
+    # EasyOCR uses ['en', 'fr'] format, Tesseract uses 'eng+fra' format
+    EASYOCR_LANGUAGES = ['en', 'fr']
+    TESSERACT_LANGUAGES = "eng+fra"
 
     # Garbled text detection thresholds
     # If quality score is below GARBLED_THRESHOLD, a quality warning is added to the prompt
@@ -153,7 +157,24 @@ class LLMSummarizer:
                 "Set it as an environment variable or pass to the constructor."
             )
 
-        # Try to import Tesseract OCR (optional dependency)
+        # --- Initialize OCR engines ---
+
+        # 1. EasyOCR (primary) — deep-learning based, MIT license, better than Tesseract
+        self._easyocr_available = False
+        self._easyocr_reader = None
+        try:
+            import easyocr
+            # Lazy-init: create reader on first use to avoid slow startup
+            self._easyocr = easyocr
+            self._easyocr_available = True
+            print("[OCR] EasyOCR available (primary OCR engine)")
+        except ImportError:
+            print(
+                "[WARN] easyocr not installed. "
+                "Install with: pip install easyocr"
+            )
+
+        # 2. Tesseract OCR (fallback) — traditional OCR engine
         self._pytesseract_available = False
         self._pillow_available = False
         self._numpy_available = False
@@ -177,10 +198,11 @@ class LLMSummarizer:
         except ImportError:
             print(
                 "[WARN] pytesseract not installed. "
-                "OCR mode will be unavailable for scanned images. "
+                "Tesseract fallback OCR unavailable. "
                 "Install with: pip install pytesseract"
             )
 
+        # 3. Pillow — required for image preprocessing
         try:
             from PIL import Image, ImageFilter, ImageEnhance, ImageOps
             self._PIL_Image = Image
@@ -191,10 +213,11 @@ class LLMSummarizer:
         except ImportError:
             print(
                 "[WARN] Pillow not installed. "
-                "OCR mode will be unavailable for scanned images. "
+                "Image preprocessing disabled. "
                 "Install with: pip install Pillow"
             )
 
+        # 4. NumPy — for advanced image preprocessing
         try:
             import numpy as np
             self._np = np
@@ -249,6 +272,65 @@ class LLMSummarizer:
             image = image.point(lambda x: 255 if x > 128 else 0)
 
         return image
+
+    def _get_easyocr_reader(self):
+        """Lazy-initialize EasyOCR reader.
+
+        EasyOCR downloads model files on first use (~100MB for English+French).
+        We cache the reader instance to avoid re-downloading on every call.
+        """
+        if self._easyocr_reader is None and self._easyocr_available:
+            try:
+                print("[OCR] Initializing EasyOCR reader (downloading models if needed)...")
+                self._easyocr_reader = self._easyocr.Reader(
+                    self.EASYOCR_LANGUAGES,
+                    gpu=False,  # CPU mode for HF Spaces
+                    verbose=False,
+                )
+                print("[OCR] EasyOCR reader initialized successfully")
+            except Exception as e:
+                print(f"[WARN] Failed to initialize EasyOCR reader: {e}")
+                self._easyocr_available = False
+        return self._easyocr_reader
+
+    def _ocr_with_easyocr(self, image_bytes: bytes) -> str:
+        """Run EasyOCR on a single page image.
+
+        EasyOCR is a deep-learning based OCR engine (MIT license) that
+        significantly outperforms Tesseract on scanned documents.
+
+        Args:
+            image_bytes: PNG/JPEG bytes of the page image.
+
+        Returns:
+            Extracted text string, or empty string on failure.
+        """
+        reader = self._get_easyocr_reader()
+        if reader is None:
+            return ""
+
+        try:
+            # EasyOCR expects a numpy array (H, W, 3) in RGB format
+            image = self._PIL_Image.open(io.BytesIO(image_bytes))
+            # Convert to RGB if necessary (EasyOCR expects 3-channel)
+            if image.mode != "RGB":
+                image = image.convert("RGB")
+            img_array = self._np.array(image)
+
+            # Run EasyOCR
+            results = reader.readtext(img_array, paragraph=True)
+
+            # Combine results into text
+            # Each result is a tuple: (bbox, text, confidence)
+            lines = []
+            for bbox, text, confidence in results:
+                if confidence > 0.3:  # Filter low-confidence detections
+                    lines.append(text.strip())
+
+            return "\n".join(lines)
+        except Exception as e:
+            print(f"[EASYOCR] Error during OCR: {e}")
+            return ""
 
     def _detect_garbled_text(self, text: str) -> tuple[bool, float]:
         """Detect if OCR text is garbled/unreadable.
@@ -365,11 +447,10 @@ class LLMSummarizer:
         """Summarize meeting minutes using the best available method.
 
         Priority:
-        1. OCR mode (Tesseract) — if page_image_urls are available and
-           pytesseract is installed. This reads scanned document images for free.
-           If image bytes aren't already in page_image_urls, uses image_fetcher
-           to download them.
-        2. Text mode (DeepSeek) — if raw_text is available.
+        1. EasyOCR mode (primary) — deep-learning OCR, MIT license.
+           Significantly better accuracy than Tesseract on scanned documents.
+        2. Tesseract OCR mode (fallback) — traditional OCR, free, open-source.
+        3. Text mode (DeepSeek) — if raw_text is available.
 
         Args:
             minutes: The minutes document to summarize.
@@ -378,7 +459,7 @@ class LLMSummarizer:
                 instead of actual image data.
         """
         # Prefer OCR mode for scanned document images
-        if minutes.page_image_urls and self._pytesseract_available and self._pillow_available:
+        if minutes.page_image_urls and self._pillow_available:
             return await self._summarize_with_ocr(minutes, image_fetcher)
 
         # Fall back to text mode
@@ -392,12 +473,14 @@ class LLMSummarizer:
         minutes: Minutes,
         image_fetcher: Optional[Callable[[], Awaitable[list[bytes]]]] = None,
     ) -> SummaryResponse:
-        """Summarize minutes using Tesseract OCR on scanned document images.
+        """Summarize minutes using OCR on scanned document images.
 
-        Downloads each page image, preprocesses it for better OCR accuracy,
-        runs Tesseract OCR with English+French language models,
-        detects garbled text, then passes the extracted text to DeepSeek
-        for summarization.
+        Priority:
+        1. EasyOCR (primary) — deep-learning based, MIT license, best accuracy.
+        2. Tesseract (fallback) — traditional OCR, used when EasyOCR unavailable.
+
+        Downloads each page image, runs OCR, detects garbled text,
+        then passes the extracted text to DeepSeek for summarization.
 
         This is completely free and open-source — no paid API keys needed.
         """
@@ -437,59 +520,68 @@ class LLMSummarizer:
                 "OCR failed: no image data and no text fallback."
             )
 
-        # Run OCR on each page image with preprocessing
+        # Run OCR on each page image
+        # Priority: EasyOCR (primary) -> Tesseract (fallback)
         extracted_pages = []
         total_raw_chars = 0
+        easyocr_available = self._easyocr_available
+        tesseract_available = self._pytesseract_available
+
         for i, img_bytes in enumerate(image_bytes_list):
+            page_text = ""
+            ocr_engine = "none"
+
             try:
-                image = self._PIL_Image.open(io.BytesIO(img_bytes))
+                # --- Try EasyOCR first (deep-learning, better accuracy) ---
+                if easyocr_available:
+                    page_text = self._ocr_with_easyocr(img_bytes)
+                    if page_text and page_text.strip():
+                        ocr_engine = "EasyOCR"
+                        print(f"[OCR] Page {i + 1}: EasyOCR extracted {len(page_text.strip())} chars")
 
-                # Preprocess image for better OCR accuracy
-                processed = self._preprocess_image_for_ocr(image)
+                # --- Fall back to Tesseract if EasyOCR failed or produced nothing ---
+                if (not page_text or len(page_text.strip()) < 20) and tesseract_available:
+                    image = self._PIL_Image.open(io.BytesIO(img_bytes))
 
-                # Run Tesseract OCR with English + French for Paris, TX
-                # French helps with French-influenced street names and legal terms
-                text = self._pytesseract.image_to_string(
-                    processed,
-                    lang=self.OCR_LANGUAGES,
-                    config="--psm 6 --oem 3",
-                )
-
-                # Also try without preprocessing as fallback for comparison
-                # (some documents actually OCR better without aggressive preprocessing)
-                if not text or len(text.strip()) < 20:
-                    text_raw = self._pytesseract.image_to_string(
-                        image,
-                        lang=self.OCR_LANGUAGES,
+                    # Try with preprocessing first
+                    processed = self._preprocess_image_for_ocr(image)
+                    text_tess = self._pytesseract.image_to_string(
+                        processed,
+                        lang=self.TESSERACT_LANGUAGES,
                         config="--psm 6 --oem 3",
                     )
-                    if len(text_raw.strip()) > len(text.strip()):
-                        text = text_raw
-                        print(f"[OCR] Page {i + 1}: using raw image (preprocessing reduced quality)")
 
-                if text and text.strip():
-                    total_raw_chars += len(text.strip())
+                    # Try without preprocessing as fallback
+                    if not text_tess or len(text_tess.strip()) < 20:
+                        text_raw = self._pytesseract.image_to_string(
+                            image,
+                            lang=self.TESSERACT_LANGUAGES,
+                            config="--psm 6 --oem 3",
+                        )
+                        if len(text_raw.strip()) > len(text_tess.strip()):
+                            text_tess = text_raw
+                            print(f"[OCR] Page {i + 1}: Tesseract using raw image")
+
+                    if text_tess and len(text_tess.strip()) > len(page_text.strip()):
+                        page_text = text_tess
+                        ocr_engine = "Tesseract"
+                        print(f"[OCR] Page {i + 1}: Tesseract extracted {len(text_tess.strip())} chars")
+
+                # --- Log results ---
+                if page_text and page_text.strip():
+                    total_raw_chars += len(page_text.strip())
                     extracted_pages.append(
-                        f"--- Page {i + 1} ---\n{text.strip()}"
+                        f"--- Page {i + 1} ({ocr_engine}) ---\n{page_text.strip()}"
                     )
                     print(
-                        f"[OCR] Page {i + 1}: extracted "
-                        f"{len(text.strip())} characters"
-                    )
-                    # Log first 300 chars of each page for debugging
-                    print(
-                        f"[OCR] Page {i + 1} preview: "
-                        f"{text.strip()[:300]}"
+                        f"[OCR] Page {i + 1} ({ocr_engine}) preview: "
+                        f"{page_text.strip()[:300]}"
                     )
                 else:
-                    print(
-                        f"[OCR] Page {i + 1}: no text extracted"
-                    )
+                    print(f"[OCR] Page {i + 1}: no text extracted by any OCR engine")
 
             except Exception as e:
-                print(
-                    f"[WARN] OCR failed for page {i + 1}: {e}"
-                )
+                print(f"[WARN] OCR failed for page {i + 1}: {e}")
 
         if not extracted_pages:
             print(
