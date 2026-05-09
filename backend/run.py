@@ -22,13 +22,29 @@ if __name__ == "__main__":
         providers.append("DeepSeek (text + OCR)")
     llm_status = ", ".join(providers) if providers else "Not configured"
 
-    ocr_available = False
+    ocr_engines = []
     try:
-        import pytesseract
-        import PIL
-        ocr_available = True
+        import easyocr
+        ocr_engines.append("EasyOCR")
     except ImportError:
         pass
+    try:
+        import pytesseract
+        ocr_engines.append("Tesseract")
+    except ImportError:
+        pass
+    try:
+        import PIL
+        ocr_engines.append("Pillow")
+    except ImportError:
+        pass
+    try:
+        import numpy
+        ocr_engines.append("NumPy")
+    except ImportError:
+        pass
+
+    ocr_status = ", ".join(ocr_engines) if ocr_engines else "Not installed"
 
     print("=" * 60)
     print("  Civic City Hub API Server")
@@ -37,7 +53,7 @@ if __name__ == "__main__":
     print(f"  City:     Paris, TX")
     print(f"  Website:  https://www.paristexas.gov")
     print(f"  LLM:      {llm_status}")
-    print(f"  OCR:      {'Tesseract (free)' if ocr_available else 'Not installed (pip install pytesseract Pillow)'}")
+    print(f"  OCR:      {ocr_status}")
     print()
     print("  Endpoints:")
     print(f"    Health:     http://localhost:{port}/health")

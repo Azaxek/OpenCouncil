@@ -116,15 +116,17 @@ async def _auto_summarize_minutes(minutes: Minutes) -> Optional[SummaryResponse]
     try:
         print(f"[AUTO] Summarizing minutes {minutes.id}...")
 
-        # If the document has page image URLs, provide an image fetcher
+        # If the document has page image URLs (strings), provide an image fetcher
         # for OCR-based summarization (even if raw_text is a stub like
         # "[This document is a scanned image...]")
         image_fetcher = None
-        if (
+        has_urls = (
             minutes.page_image_urls
+            and isinstance(minutes.page_image_urls[0], str)
             and connector
             and minutes.document_url
-        ):
+        )
+        if has_urls:
             # Capture page_urls in a closure so the fallback in
             # fetch_page_images() can use them if PDF generation fails
             _page_urls = list(minutes.page_image_urls)
@@ -224,16 +226,23 @@ app.add_middleware(
 async def health():
     """Health check endpoint."""
     ocr_available = False
+    ocr_engines = []
     if summarizer:
-        ocr_available = (
-            summarizer._pytesseract_available
-            and summarizer._pillow_available
-        )
+        if summarizer._easyocr_available:
+            ocr_engines.append("easyocr")
+        if summarizer._pytesseract_available:
+            ocr_engines.append("tesseract")
+        if summarizer._pillow_available:
+            ocr_engines.append("pillow")
+        if summarizer._numpy_available:
+            ocr_engines.append("numpy")
+        ocr_available = bool(ocr_engines)
     return {
         "status": "ok",
         "city": f"{PARIS_TX_CONFIG.name}, {PARIS_TX_CONFIG.state}",
         "llm_available": summarizer is not None,
         "ocr_available": ocr_available,
+        "ocr_engines": ocr_engines,
         "storage": "postgresql" if USE_POSTGRES else "sqlite",
     }
 
@@ -425,11 +434,13 @@ async def summarize_minutes_endpoint(request: SummaryRequest):
         # Provide image fetcher for OCR-based summarization
         # (even if raw_text is a stub like "[This document is a scanned image...]")
         image_fetcher = None
-        if (
+        has_urls = (
             minutes.page_image_urls
+            and isinstance(minutes.page_image_urls[0], str)
             and connector
             and minutes.document_url
-        ):
+        )
+        if has_urls:
             # Capture page_urls in a closure so the fallback in
             # fetch_page_images() can use them if PDF generation fails
             _page_urls = list(minutes.page_image_urls)

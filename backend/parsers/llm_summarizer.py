@@ -134,6 +134,10 @@ class LLMSummarizer:
     # This prevents LLM hallucination on completely unreadable text
     UNREADABLE_THRESHOLD = 0.2
 
+    # Minimum character threshold for considering OCR successful.
+    # If an engine produces fewer chars than this, other engines will still be tried.
+    MIN_OCR_CHARS = 50
+
     def __init__(
         self,
         deepseek_key: Optional[str] = None,
@@ -229,7 +233,7 @@ class LLMSummarizer:
         """Cleanup resources (no-op for now, kept for API compatibility)."""
         pass
 
-    def _preprocess_image_for_ocr(self, image) -> object:
+    def _preprocess_image_for_ocr(self, image, for_easyocr: bool = False):
         """Preprocess a PIL image to improve OCR accuracy.
 
         Applies:
@@ -239,9 +243,17 @@ class LLMSummarizer:
         4. Denoise with median filter
         5. Deskew (straighten) the image
 
-        Returns the preprocessed PIL Image.
+        For EasyOCR, returns the preprocessed image in RGB mode (EasyOCR needs 3-channel).
+        For Tesseract, returns the preprocessed image in grayscale (L) mode.
+
+        Args:
+            image: PIL Image to preprocess.
+            for_easyocr: If True, returns RGB image; if False, returns grayscale.
+
+        Returns:
+            Preprocessed PIL Image.
         """
-        # Convert to grayscale
+        # Convert to grayscale for processing
         if image.mode != "L":
             image = image.convert("L")
 
@@ -271,6 +283,10 @@ class LLMSummarizer:
             # Simple threshold without numpy
             image = image.point(lambda x: 255 if x > 128 else 0)
 
+        # EasyOCR expects 3-channel RGB
+        if for_easyocr:
+            image = image.convert("RGB")
+
         return image
 
     def _get_easyocr_reader(self):
@@ -294,10 +310,13 @@ class LLMSummarizer:
         return self._easyocr_reader
 
     def _ocr_with_easyocr(self, image_bytes: bytes) -> str:
-        """Run EasyOCR on a single page image.
+        """Run EasyOCR on a single page image with preprocessing.
 
         EasyOCR is a deep-learning based OCR engine (MIT license) that
         significantly outperforms Tesseract on scanned documents.
+
+        Applies image preprocessing (contrast enhancement, binarization)
+        before passing to EasyOCR for better results on scanned documents.
 
         Args:
             image_bytes: PNG/JPEG bytes of the page image.
@@ -310,12 +329,15 @@ class LLMSummarizer:
             return ""
 
         try:
-            # EasyOCR expects a numpy array (H, W, 3) in RGB format
+            # Open the image
             image = self._PIL_Image.open(io.BytesIO(image_bytes))
-            # Convert to RGB if necessary (EasyOCR expects 3-channel)
-            if image.mode != "RGB":
-                image = image.convert("RGB")
-            img_array = self._np.array(image)
+
+            # Preprocess the image for better OCR accuracy
+            # EasyOCR gets the same preprocessing as Tesseract now
+            processed = self._preprocess_image_for_ocr(image, for_easyocr=True)
+
+            # EasyOCR expects a numpy array (H, W, 3) in RGB format
+            img_array = self._np.array(processed)
 
             # Run EasyOCR
             results = reader.readtext(img_array, paragraph=True)
@@ -327,7 +349,26 @@ class LLMSummarizer:
                 if confidence > 0.3:  # Filter low-confidence detections
                     lines.append(text.strip())
 
-            return "\n".join(lines)
+            easyocr_text = "\n".join(lines)
+
+            # If EasyOCR produced very little text, try without preprocessing too
+            # (some documents OCR better with original image)
+            if len(easyocr_text.strip()) < self.MIN_OCR_CHARS:
+                raw_image = self._PIL_Image.open(io.BytesIO(image_bytes))
+                if raw_image.mode != "RGB":
+                    raw_image = raw_image.convert("RGB")
+                raw_array = self._np.array(raw_image)
+                raw_results = reader.readtext(raw_array, paragraph=True)
+                raw_lines = []
+                for bbox, text, confidence in raw_results:
+                    if confidence > 0.3:
+                        raw_lines.append(text.strip())
+                raw_text = "\n".join(raw_lines)
+                if len(raw_text.strip()) > len(easyocr_text.strip()):
+                    print(f"[EASYOCR] Raw image produced more text ({len(raw_text.strip())} chars) than preprocessed ({len(easyocr_text.strip())} chars)")
+                    easyocr_text = raw_text
+
+            return easyocr_text
         except Exception as e:
             print(f"[EASYOCR] Error during OCR: {e}")
             return ""
@@ -447,10 +488,12 @@ class LLMSummarizer:
         """Summarize meeting minutes using the best available method.
 
         Priority:
-        1. EasyOCR mode (primary) — deep-learning OCR, MIT license.
-           Significantly better accuracy than Tesseract on scanned documents.
-        2. Tesseract OCR mode (fallback) — traditional OCR, free, open-source.
-        3. Text mode (DeepSeek) — if raw_text is available.
+        1. OCR mode (EasyOCR -> Tesseract) — for scanned document images.
+        2. Text mode (DeepSeek) — if raw_text is available.
+
+        OCR mode is entered when:
+        - page_image_urls is non-empty, AND
+        - At least one OCR engine is available (EasyOCR, Tesseract, or Pillow for preprocessing)
 
         Args:
             minutes: The minutes document to summarize.
@@ -458,8 +501,15 @@ class LLMSummarizer:
                 for OCR. Used when page_image_urls contains URLs (strings)
                 instead of actual image data.
         """
+        # Check if any OCR capability is available
+        ocr_capable = (
+            self._easyocr_available
+            or self._pytesseract_available
+            or self._pillow_available
+        )
+
         # Prefer OCR mode for scanned document images
-        if minutes.page_image_urls and self._pillow_available:
+        if minutes.page_image_urls and ocr_capable:
             return await self._summarize_with_ocr(minutes, image_fetcher)
 
         # Fall back to text mode
@@ -521,51 +571,65 @@ class LLMSummarizer:
             )
 
         # Run OCR on each page image
-        # Priority: EasyOCR (primary) -> Tesseract (fallback)
+        # Strategy: Try ALL available engines and take the BEST result per page
         extracted_pages = []
         total_raw_chars = 0
-        easyocr_available = self._easyocr_available
-        tesseract_available = self._pytesseract_available
 
         for i, img_bytes in enumerate(image_bytes_list):
             page_text = ""
             ocr_engine = "none"
 
             try:
+                best_text = ""
+                best_engine = "none"
+
                 # --- Try EasyOCR first (deep-learning, better accuracy) ---
-                if easyocr_available:
-                    page_text = self._ocr_with_easyocr(img_bytes)
-                    if page_text and page_text.strip():
-                        ocr_engine = "EasyOCR"
-                        print(f"[OCR] Page {i + 1}: EasyOCR extracted {len(page_text.strip())} chars")
+                if self._easyocr_available:
+                    try:
+                        text_easy = self._ocr_with_easyocr(img_bytes)
+                        if text_easy and len(text_easy.strip()) > len(best_text.strip()):
+                            best_text = text_easy.strip()
+                            best_engine = "EasyOCR"
+                            print(f"[OCR] Page {i + 1}: EasyOCR extracted {len(best_text)} chars")
+                    except Exception as e:
+                        print(f"[WARN] EasyOCR failed for page {i + 1}: {e}")
 
-                # --- Fall back to Tesseract if EasyOCR failed or produced nothing ---
-                if (not page_text or len(page_text.strip()) < 20) and tesseract_available:
-                    image = self._PIL_Image.open(io.BytesIO(img_bytes))
+                # --- Always try Tesseract too (it may extract different content) ---
+                if self._pytesseract_available:
+                    try:
+                        image = self._PIL_Image.open(io.BytesIO(img_bytes))
 
-                    # Try with preprocessing first
-                    processed = self._preprocess_image_for_ocr(image)
-                    text_tess = self._pytesseract.image_to_string(
-                        processed,
-                        lang=self.TESSERACT_LANGUAGES,
-                        config="--psm 6 --oem 3",
-                    )
+                        # Try with preprocessing first
+                        processed = self._preprocess_image_for_ocr(image, for_easyocr=False)
+                        text_tess_processed = self._pytesseract.image_to_string(
+                            processed,
+                            lang=self.TESSERACT_LANGUAGES,
+                            config="--psm 6 --oem 3",
+                        ).strip()
 
-                    # Try without preprocessing as fallback
-                    if not text_tess or len(text_tess.strip()) < 20:
-                        text_raw = self._pytesseract.image_to_string(
+                        # Try without preprocessing as fallback
+                        text_tess_raw = self._pytesseract.image_to_string(
                             image,
                             lang=self.TESSERACT_LANGUAGES,
                             config="--psm 6 --oem 3",
-                        )
-                        if len(text_raw.strip()) > len(text_tess.strip()):
-                            text_tess = text_raw
-                            print(f"[OCR] Page {i + 1}: Tesseract using raw image")
+                        ).strip()
 
-                    if text_tess and len(text_tess.strip()) > len(page_text.strip()):
-                        page_text = text_tess
-                        ocr_engine = "Tesseract"
-                        print(f"[OCR] Page {i + 1}: Tesseract extracted {len(text_tess.strip())} chars")
+                        # Take the longer result from Tesseract
+                        text_tess = text_tess_processed if len(text_tess_processed) >= len(text_tess_raw) else text_tess_raw
+
+                        if text_tess and len(text_tess) > len(best_text):
+                            best_text = text_tess
+                            best_engine = "Tesseract"
+                            print(f"[OCR] Page {i + 1}: Tesseract extracted {len(best_text)} chars")
+                            if text_tess == text_tess_raw and text_tess != text_tess_processed:
+                                print(f"[OCR] Page {i + 1}: Tesseract using raw image (preprocessed gave {len(text_tess_processed)} chars)")
+                    except Exception as e:
+                        print(f"[WARN] Tesseract failed for page {i + 1}: {e}")
+
+                # --- Use the best result ---
+                if best_text:
+                    page_text = best_text
+                    ocr_engine = best_engine
 
                 # --- Log results ---
                 if page_text and page_text.strip():
