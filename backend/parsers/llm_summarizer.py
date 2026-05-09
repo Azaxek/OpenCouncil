@@ -591,6 +591,10 @@ class LLMSummarizer:
         - page_image_urls is non-empty, AND
         - At least one OCR engine is available (EasyOCR, Tesseract, or Pillow for preprocessing)
 
+        If OCR engines aren't available but page images exist (e.g. on Hugging Face
+        where Tesseract isn't installed), we still try to download images and run OCR.
+        If that fails, we fall back to text mode with whatever raw_text is available.
+
         Args:
             minutes: The minutes document to summarize.
             image_fetcher: Optional callable that returns list of image bytes
@@ -605,8 +609,23 @@ class LLMSummarizer:
         )
 
         # Prefer OCR mode for scanned document images
-        if minutes.page_image_urls and ocr_capable:
-            return await self._summarize_with_ocr(minutes, image_fetcher)
+        if minutes.page_image_urls:
+            if ocr_capable:
+                return await self._summarize_with_ocr(minutes, image_fetcher)
+            else:
+                # No local OCR engines available (e.g. Hugging Face).
+                # Try to download images anyway — if successful, we can still
+                # attempt OCR. If not, fall through to text mode.
+                print("[OCR] No local OCR engines available, trying image download anyway...")
+                if image_fetcher:
+                    try:
+                        image_bytes = await image_fetcher()
+                        if image_bytes:
+                            # We have images but no OCR — try OCR mode anyway
+                            # (it will attempt OCR and fall back gracefully)
+                            return await self._summarize_with_ocr(minutes, image_fetcher)
+                    except Exception as e:
+                        print(f"[WARN] Image download failed (expected on HF): {e}")
 
         # Fall back to text mode
         if self.deepseek_client:
@@ -924,9 +943,28 @@ class LLMSummarizer:
         parts.append("")
 
         if minutes.raw_text:
-            # Use the raw document text if available
-            parts.append("--- Full Minutes Text ---")
-            parts.append(minutes.raw_text[:self.MAX_OCR_TEXT_CHARS])  # Use same limit as OCR
+            raw = minutes.raw_text.strip()
+
+            # Detect stub text from fetch_document_text() — this is NOT real content
+            # Stub text looks like: "[This document is a scanned image...]"
+            stub_patterns = [
+                "this document is a scanned image",
+                "page images are available at the following urls",
+                "no detailed minutes text available",
+            ]
+            is_stub = any(p in raw.lower() for p in stub_patterns)
+
+            if is_stub:
+                # Don't send stub text to the LLM — it will just hallucinate
+                parts.append(
+                    "(This document is a scanned image. "
+                    "OCR text extraction was not available in this environment. "
+                    "Please view the original document directly.)"
+                )
+            else:
+                # Use the raw document text if available
+                parts.append("--- Full Minutes Text ---")
+                parts.append(raw[:self.MAX_OCR_TEXT_CHARS])
         else:
             parts.append("(No detailed minutes text available)")
 
