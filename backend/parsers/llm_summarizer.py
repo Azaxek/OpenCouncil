@@ -17,7 +17,7 @@ Supports two modes:
 import io
 import json
 import os
-from typing import Callable, Optional
+from typing import Awaitable, Callable, Optional
 
 from openai import OpenAI
 
@@ -166,7 +166,7 @@ class LLMSummarizer:
     async def summarize_minutes(
         self,
         minutes: Minutes,
-        image_fetcher: Optional[Callable[[], list[bytes]]] = None,
+        image_fetcher: Optional[Callable[[], Awaitable[list[bytes]]]] = None,
     ) -> SummaryResponse:
         """Summarize meeting minutes using the best available method.
 
@@ -196,7 +196,7 @@ class LLMSummarizer:
     async def _summarize_with_ocr(
         self,
         minutes: Minutes,
-        image_fetcher: Optional[Callable[[], list[bytes]]] = None,
+        image_fetcher: Optional[Callable[[], Awaitable[list[bytes]]]] = None,
     ) -> SummaryResponse:
         """Summarize minutes using Tesseract OCR on scanned document images.
 
@@ -215,7 +215,7 @@ class LLMSummarizer:
         image_bytes_list: list[bytes] = []
         if has_urls and image_fetcher:
             try:
-                image_bytes_list = image_fetcher()
+                image_bytes_list = await image_fetcher()
                 print(
                     f"[OCR] Downloaded {len(image_bytes_list)} page images"
                 )
