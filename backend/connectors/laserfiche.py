@@ -476,6 +476,8 @@ class LaserficheConnector:
         We also extract the docId from the page toolbar or docInfo JSON.
         """
         page_urls = []
+        doc_id = None
+        num_pages = None
 
         # Method 1: Extract from page toolbar links
         # Pattern: href="/WebLink/0/doc/{docId}/Page{pageNum}.aspx"
@@ -494,12 +496,37 @@ class LaserficheConnector:
                 if full_url not in page_urls:
                     page_urls.append(full_url)
 
-        # Method 2: Extract from docInfo JSON in JavaScript
-        if not page_urls:
+        # Method 2: Extract total page count from toolbar display
+        # Pattern: <span class="PageNumberToolbarCount">4</span>
+        if not num_pages:
+            count_match = re.search(
+                r'class="PageNumberToolbarCount"[^>]*>(\d+)</span>',
+                html
+            )
+            if count_match:
+                num_pages = int(count_match.group(1))
+
+        # Method 3: Extract from docInfo JSON in JavaScript
+        if not doc_id:
             doc_id = self._extract_doc_id_from_html(html, viewer_url)
+        if not num_pages:
             num_pages = self._extract_num_pages_from_html(html)
-            if doc_id and num_pages:
-                for page_num in range(1, num_pages + 1):
+
+        # Method 4: Extract doc_id from the viewer URL itself
+        if not doc_id:
+            match = re.search(r"id=(\d+)", viewer_url)
+            if match:
+                doc_id = match.group(1)
+
+        # If we have doc_id and num_pages, generate all page URLs
+        if doc_id and num_pages and len(page_urls) < num_pages:
+            existing_pages = set()
+            for url in page_urls:
+                m = re.search(r"Page(\d+)\.aspx", url)
+                if m:
+                    existing_pages.add(int(m.group(1)))
+            for page_num in range(1, num_pages + 1):
+                if page_num not in existing_pages:
                     page_urls.append(
                         f"{LASERFICHE_BASE}/0/doc/{doc_id}/Page{page_num}.aspx"
                     )

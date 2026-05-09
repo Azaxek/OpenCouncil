@@ -115,12 +115,12 @@ async def _auto_summarize_minutes(minutes: Minutes) -> Optional[SummaryResponse]
     try:
         print(f"[AUTO] Summarizing minutes {minutes.id}...")
 
-        # If the document has page image URLs but no raw text,
-        # provide an image fetcher for OCR-based summarization
+        # If the document has page image URLs, provide an image fetcher
+        # for OCR-based summarization (even if raw_text is a stub like
+        # "[This document is a scanned image...]")
         image_fetcher = None
         if (
             minutes.page_image_urls
-            and not minutes.raw_text
             and connector
             and minutes.document_url
         ):
@@ -411,10 +411,10 @@ async def summarize_minutes_endpoint(request: SummaryRequest):
 
     try:
         # Provide image fetcher for OCR-based summarization
+        # (even if raw_text is a stub like "[This document is a scanned image...]")
         image_fetcher = None
         if (
             minutes.page_image_urls
-            and not minutes.raw_text
             and connector
             and minutes.document_url
         ):
