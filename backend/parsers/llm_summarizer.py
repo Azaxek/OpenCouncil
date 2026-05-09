@@ -28,6 +28,8 @@ from models.schemas import Minutes, SummaryResponse
 
 # System prompt for minutes summarization — EXTREMELY STRICT to prevent hallucination
 # Designed to handle OCR-garbled text from scanned city council minutes
+# CRITICAL: LLMs naturally hallucinate when given sparse/garbled text.
+# This prompt is structured to aggressively prefer "nothing found" over "made up".
 MINUTES_SYSTEM_PROMPT = """You are a civic technology assistant that helps residents understand
 what happened at their local government meetings. Your job is to translate official city council
 meeting minutes into plain, accessible language.
@@ -35,6 +37,8 @@ meeting minutes into plain, accessible language.
 ## ABSOLUTE RULE — ZERO HALLUCINATION
 
 You MUST follow these rules STRICTLY. Violating them will cause real-world harm.
+
+### CORE RULES
 
 1. **NEVER invent information.** If the text below does not explicitly mention a specific
    company name, vote count, dollar amount, time, date, or person's name — do NOT include it.
@@ -75,49 +79,30 @@ You MUST follow these rules STRICTLY. Violating them will cause real-world harm.
     rather than decisions made), clearly state this in the summary. Do not report agenda items
     as if they were decisions that were actually made.
 
-The text you receive may be extracted from scanned documents using OCR (Optical Character
-Recognition). OCR frequently introduces errors: misspelled words, missing punctuation,
-incorrect numbers, garbled text, and missing sections. Treat OCR text as potentially
-unreliable — only report what you can read with high confidence.
+### CRITICAL: HANDLING SPARSE OR GARBLED TEXT
 
-Format your response as JSON with this structure:
+If the text below is very short, contains mostly UI elements (navigation, buttons, PDF controls),
+or appears to be garbled/unreadable OCR output, you MUST:
+
+- Set "summary" to: "The document text could not be reliably extracted. The scanned document
+  images did not produce readable text. Please view the original document directly."
+- Return ALL arrays (key_decisions, budget_items, public_comment_opportunities, items) as
+  EMPTY arrays `[]`.
+- Do NOT try to infer meeting content from document metadata (title, date, type) alone.
+  A meeting title like "City Council Meeting Minutes - 04-13-2026" does NOT tell you what
+  decisions were made.
+
+### JSON OUTPUT FORMAT
+
 {
-  "summary": "2-3 paragraph plain-language overview. If text quality is poor, state that clearly.",
-  "key_decisions": [
-    {
-      "title": "Short title (ONLY if explicitly in text)",
-      "plain_english": "What this means in simple terms",
-      "impact": "Who this affects and how",
-      "category": "zoning|budget|public-safety|infrastructure|administration|other",
-      "vote": "Only include if vote tally is explicitly recorded in text"
-    }
-  ],
-  "budget_items": [
-    {
-      "title": "Item title (ONLY if explicitly in text)",
-      "amount": "Exact amount from text (ONLY if explicitly stated)",
-      "description": "What the money is for"
-    }
-  ],
-  "public_comment_opportunities": [
-    {
-      "item": "Topic discussed (ONLY if explicitly in text)",
-      "deadline": "When comments were received (ONLY if explicitly stated)",
-      "how": "How residents provided input (ONLY if explicitly stated)"
-    }
-  ],
-  "items": [
-    {
-      "title": "Topic discussed (ONLY if explicitly in text)",
-      "plain_english": "Plain language explanation",
-      "category": "section category",
-      "action_needed": "approved|denied|tabled|discussed|received"
-    }
-  ]
+  "summary": "2-3 paragraph plain-language overview. If text quality is poor, state that clearly. If text is unreadable, say so and return empty arrays.",
+  "key_decisions": [],
+  "budget_items": [],
+  "public_comment_opportunities": [],
+  "items": []
 }
 
-REMEMBER: If the text does not contain specific information for any field, return `[]`
-for that field. Empty arrays are CORRECT. Fabricated data is WRONG."""
+REMEMBER: Empty arrays are CORRECT. Fabricated data is WRONG. If in doubt, return empty arrays."""
 
 
 class LLMSummarizer:
@@ -137,6 +122,13 @@ class LLMSummarizer:
 
     # Tesseract OCR languages for Paris, TX — English + French for French-influenced names
     OCR_LANGUAGES = "eng+fra"
+
+    # Garbled text detection thresholds
+    # If quality score is below GARBLED_THRESHOLD, a quality warning is added to the prompt
+    GARBLED_THRESHOLD = 0.4
+    # If quality score is below UNREADABLE_THRESHOLD, skip LLM entirely and return canned response
+    # This prevents LLM hallucination on completely unreadable text
+    UNREADABLE_THRESHOLD = 0.2
 
     def __init__(
         self,
@@ -341,6 +333,30 @@ class LLMSummarizer:
 
         return is_garbled, max(0.0, min(1.0, score))
 
+    def _build_unreadable_response(
+        self, minutes: Minutes, reason: str = "unreadable"
+    ) -> SummaryResponse:
+        """Build a minimal SummaryResponse for unreadable/garbled text.
+
+        This avoids calling the LLM at all when text quality is too poor,
+        since LLMs tend to hallucinate when given sparse or garbled input.
+        """
+        print(f"[SKIP] Skipping LLM call — text is {reason}")
+        return SummaryResponse(
+            minutes_id=minutes.id,
+            meeting_date=minutes.meeting_date,
+            meeting_type=minutes.meeting_type,
+            summary=(
+                f"The document text could not be reliably extracted. "
+                f"The scanned document images did not produce readable text "
+                f"({reason}). Please view the original document directly."
+            ),
+            key_decisions=[],
+            budget_items=[],
+            public_comment_opportunities=[],
+            items=[],
+        )
+
     async def summarize_minutes(
         self,
         minutes: Minutes,
@@ -498,6 +514,13 @@ class LLMSummarizer:
         print(f"[OCR] Total extracted text: {len(full_text)} characters")
         print(f"[OCR] Full extracted text:\n{full_text[:3000]}")
 
+        # PRE-LLM GUARD: If text quality is below UNREADABLE_THRESHOLD, skip LLM entirely.
+        # LLMs hallucinate when given sparse/garbled text — better to return empty response.
+        if quality_score < self.UNREADABLE_THRESHOLD:
+            return self._build_unreadable_response(
+                minutes, reason=f"OCR quality score too low ({quality_score:.2f})"
+            )
+
         # Truncate text to avoid exceeding LLM context limits
         # Use the class constant for configurable limit
         text_for_llm = full_text[:self.MAX_OCR_TEXT_CHARS]
@@ -562,8 +585,15 @@ class LLMSummarizer:
 
         # Detect garbled text quality
         is_garbled, quality_score = self._detect_garbled_text(minutes_text)
-        if is_garbled:
-            print(f"[TEXT QUALITY] Text appears garbled (score: {quality_score:.2f})")
+        print(f"[TEXT QUALITY] Text quality score: {quality_score:.2f} "
+              f"({'GARBLED' if is_garbled else 'OK'})")
+
+        # PRE-LLM GUARD: If text quality is below UNREADABLE_THRESHOLD, skip LLM entirely.
+        # LLMs hallucinate when given sparse/garbled text — better to return empty response.
+        if quality_score < self.UNREADABLE_THRESHOLD:
+            return self._build_unreadable_response(
+                minutes, reason=f"text quality score too low ({quality_score:.2f})"
+            )
 
         quality_warning = ""
         if is_garbled:
