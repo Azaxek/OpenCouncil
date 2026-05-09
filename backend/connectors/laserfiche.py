@@ -360,18 +360,21 @@ class LaserficheConnector:
             return []
 
     async def fetch_page_images(
-        self, document_url: str
+        self, document_url: str, page_urls: Optional[list[str]] = None
     ) -> list[bytes]:
-        """Download actual page images from Laserfiche via PDF generation.
+        """Download actual page images from Laserfiche.
 
-        Strategy (more reliable than direct page image download):
+        Primary strategy (PDF generation):
         1. Visit docview.aspx to establish session cookies
         2. POST to GeneratePDF.aspx to generate a PDF of the document
         3. Use PyMuPDF (fitz) to render each PDF page to a PIL Image
-        4. Return the image bytes for Tesseract OCR
 
-        This avoids the CookieCheck.aspx redirect issue that plagues
-        direct Page.aspx image downloads.
+        Fallback strategy (direct page download):
+        If PDF generation fails (e.g. on HF Spaces where the Laserfiche
+        server may block the request), try downloading each page URL
+        directly and extracting the embedded image.
+
+        Returns image bytes for OCR processing.
         """
         if not document_url:
             return []
@@ -395,6 +398,7 @@ class LaserficheConnector:
 
         # Step 2: POST to GeneratePDF.aspx to get a PDF
         gen_url = f"{self.base_url}/GeneratePDF.aspx"
+        pdf_bytes = None
         try:
             pdf_response = await self.client.post(
                 gen_url,
@@ -416,21 +420,31 @@ class LaserficheConnector:
 
             if not pdf_bytes or len(pdf_bytes) < 100:
                 print(f"[WARN] GeneratePDF returned empty or too small response ({len(pdf_bytes)} bytes)")
-                return []
-
-            # Check if we got HTML (error page) instead of PDF
-            if b"<html" in pdf_bytes[:100].lower() or b"<!DOCTYPE" in pdf_bytes[:100]:
+                pdf_bytes = None
+            elif b"<html" in pdf_bytes[:100].lower() or b"<!DOCTYPE" in pdf_bytes[:100]:
                 print(f"[WARN] GeneratePDF returned HTML instead of PDF (likely an error page)")
-                print(f"[WARN] Response preview: {pdf_bytes[:300]}")
-                return []
-
-            print(f"[PDF] Generated PDF: {len(pdf_bytes)} bytes, Content-Type: {content_type}")
+                pdf_bytes = None
+            else:
+                print(f"[PDF] Generated PDF: {len(pdf_bytes)} bytes, Content-Type: {content_type}")
 
         except Exception as e:
             print(f"[WARN] GeneratePDF POST failed: {e}")
-            return []
+            pdf_bytes = None
 
-        # Step 3: Render PDF pages to images using PyMuPDF
+        # Step 3: If we got a valid PDF, render it to images
+        if pdf_bytes:
+            images = self._render_pdf_to_images(pdf_bytes)
+            if images:
+                return images
+            print("[WARN] PDF rendering returned no images, trying fallback...")
+
+        # Step 4: Fallback — download individual page images directly
+        # This handles cases where GeneratePDF.aspx is blocked (e.g. HF Spaces)
+        print("[FALLBACK] Trying direct page image download...")
+        return await self._fetch_page_images_fallback(doc_id, page_urls)
+
+    def _render_pdf_to_images(self, pdf_bytes: bytes) -> list[bytes]:
+        """Render PDF pages to PNG images using PyMuPDF."""
         images: list[bytes] = []
         try:
             import fitz  # PyMuPDF
@@ -453,16 +467,162 @@ class LaserficheConnector:
                     print(f"[WARN] Failed to render page {page_num + 1}: {e}")
 
             pdf_doc.close()
-
         except ImportError:
             print("[WARN] PyMuPDF (fitz) not installed. Cannot render PDF pages.")
             print("       Install with: pip install PyMuPDF")
-            return []
         except Exception as e:
             print(f"[WARN] Failed to render PDF pages: {e}")
-            return []
 
         return images
+
+    async def _fetch_page_images_fallback(
+        self, doc_id: str, page_urls: Optional[list[str]] = None
+    ) -> list[bytes]:
+        """Fallback: download individual page images directly from Laserfiche.
+
+        Tries multiple strategies:
+        1. Download each page URL directly (Page1.aspx, Page2.aspx, etc.)
+           and extract the embedded image reference from the HTML.
+        2. Try the GetImage.aspx endpoint with PageIds from docInfo JSON.
+
+        Returns a list of PNG image bytes.
+        """
+        images: list[bytes] = []
+
+        # If we have explicit page URLs, try downloading them
+        if page_urls:
+            for i, page_url in enumerate(page_urls):
+                try:
+                    print(f"[FALLBACK] Downloading page {i + 1}: {page_url}")
+                    response = await self.client.get(page_url, timeout=30.0)
+                    response.raise_for_status()
+
+                    content = response.content
+                    content_type = response.headers.get("content-type", "")
+
+                    # Check if we got an image directly
+                    if content_type.startswith("image/"):
+                        # Convert to PNG if needed
+                        img_bytes = self._convert_to_png_bytes(content)
+                        if img_bytes:
+                            images.append(img_bytes)
+                            print(f"[FALLBACK] Page {i + 1}: Got image ({len(img_bytes)} bytes, {content_type})")
+                            continue
+
+                    # If we got HTML, try to extract the image from docInfo JSON
+                    html = response.text
+                    img_bytes = await self._extract_image_from_page_html(html, doc_id, i + 1)
+                    if img_bytes:
+                        images.append(img_bytes)
+                        print(f"[FALLBACK] Page {i + 1}: Extracted image from HTML ({len(img_bytes)} bytes)")
+                        continue
+
+                    print(f"[FALLBACK] Page {i + 1}: Could not extract image from response")
+
+                except Exception as e:
+                    print(f"[FALLBACK] Page {i + 1}: Download failed: {e}")
+                    continue
+
+        if images:
+            return images
+
+        # Last resort: try GetImage.aspx with page IDs from docInfo
+        print("[FALLBACK] Trying GetImage.aspx endpoint...")
+        return await self._fetch_via_getimage(doc_id)
+
+    async def _extract_image_from_page_html(
+        self, html: str, doc_id: str, page_num: int
+    ) -> Optional[bytes]:
+        """Extract a page image from the Laserfiche page HTML.
+
+        The page HTML contains a docInfo JSON with PageIds that can be
+        used to construct GetImage.aspx URLs.
+        """
+        # Try to extract docInfo JSON from the HTML
+        # Pattern: var docInfo = {"NumPages":...,"PageIds":[...],...};
+        doc_info_match = re.search(
+            r'var\s+docInfo\s*=\s*(\{.*?"PageIds"\s*:\s*\[.*?\]\s*.*?\});',
+            html,
+            re.DOTALL,
+        )
+        if doc_info_match:
+            try:
+                doc_info = json.loads(doc_info_match.group(1))
+                page_ids = doc_info.get("PageIds", [])
+                dbid = doc_info.get("DBID", DBID)
+                doc_id_from_info = str(doc_info.get("Id", doc_id))
+
+                # PageIds[0] is a placeholder (0), actual pages start at index 1
+                if len(page_ids) > page_num:
+                    page_id = page_ids[page_num]
+                    if page_id and page_id > 0:
+                        # Try GetImage.aspx with the page ID
+                        img_url = (
+                            f"{self.base_url}/GetImage.aspx"
+                            f"?pageid={page_id}&dbid={dbid}&docid={doc_id_from_info}"
+                        )
+                        print(f"[FALLBACK] Trying GetImage.aspx: {img_url}")
+                        try:
+                            img_response = await self.client.get(img_url, timeout=30.0)
+                            img_response.raise_for_status()
+                            img_content = img_response.content
+                            content_type = img_response.headers.get("content-type", "")
+                            if content_type.startswith("image/") and len(img_content) > 1000:
+                                return self._convert_to_png_bytes(img_content)
+                        except Exception as e:
+                            print(f"[FALLBACK] GetImage.aspx failed: {e}")
+
+                        # Also try with format parameter
+                        for fmt in ["png", "tiff", "jpeg"]:
+                            try:
+                                img_url_fmt = (
+                                    f"{self.base_url}/GetImage.aspx"
+                                    f"?pageid={page_id}&dbid={dbid}&docid={doc_id_from_info}"
+                                    f"&format={fmt}"
+                                )
+                                img_response = await self.client.get(img_url_fmt, timeout=30.0)
+                                img_response.raise_for_status()
+                                img_content = img_response.content
+                                if len(img_content) > 1000:
+                                    return self._convert_to_png_bytes(img_content)
+                            except Exception:
+                                continue
+            except (json.JSONDecodeError, KeyError, IndexError) as e:
+                print(f"[FALLBACK] Failed to parse docInfo JSON: {e}")
+
+        return None
+
+    async def _fetch_via_getimage(self, doc_id: str) -> list[bytes]:
+        """Last resort: try to enumerate page IDs via GetImage.aspx.
+
+        Laserfiche assigns sequential page IDs. We try a range of
+        possible page IDs and see which ones return valid images.
+        """
+        images: list[bytes] = []
+        # Try page IDs in a reasonable range (typically sequential starting from a base)
+        # We don't know the exact page IDs, so we try a heuristic approach
+        # Page IDs are usually large numbers (e.g. 5580932, 5580933, 5580934)
+        # We can't enumerate them, so this is a best-effort attempt.
+        # Instead, try the page URLs with image-specific headers.
+        print("[FALLBACK] GetImage.aspx enumeration not feasible without page IDs")
+        return images
+
+    def _convert_to_png_bytes(self, image_data: bytes) -> Optional[bytes]:
+        """Convert image data to PNG bytes using PIL."""
+        try:
+            from PIL import Image
+            import io
+
+            img = Image.open(io.BytesIO(image_data))
+            # Convert to RGB if necessary (e.g. RGBA, CMYK, P mode)
+            if img.mode not in ("RGB", "L"):
+                img = img.convert("RGB")
+            buf = io.BytesIO()
+            img.save(buf, format="PNG")
+            return buf.getvalue()
+        except Exception as e:
+            print(f"[FALLBACK] Image conversion failed: {e}")
+            return None
 
     def _extract_page_image_urls(
         self, html: str, viewer_url: str

@@ -125,8 +125,11 @@ async def _auto_summarize_minutes(minutes: Minutes) -> Optional[SummaryResponse]
             and connector
             and minutes.document_url
         ):
+            # Capture page_urls in a closure so the fallback in
+            # fetch_page_images() can use them if PDF generation fails
+            _page_urls = list(minutes.page_image_urls)
             image_fetcher = lambda: connector.fetch_page_images(
-                minutes.document_url
+                minutes.document_url, page_urls=_page_urls
             )
 
         summary = await summarizer.summarize_minutes(
@@ -427,8 +430,11 @@ async def summarize_minutes_endpoint(request: SummaryRequest):
             and connector
             and minutes.document_url
         ):
+            # Capture page_urls in a closure so the fallback in
+            # fetch_page_images() can use them if PDF generation fails
+            _page_urls = list(minutes.page_image_urls)
             image_fetcher = lambda: connector.fetch_page_images(
-                minutes.document_url
+                minutes.document_url, page_urls=_page_urls
             )
 
         summary = await summarizer.summarize_minutes(
