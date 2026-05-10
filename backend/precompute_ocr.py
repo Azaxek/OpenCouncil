@@ -86,18 +86,50 @@ async def main():
             except Exception as e:
                 print(f"    EasyOCR page {i+1} failed: {e}")
 
-            # Tesseract
+            # Tesseract — try multiple PSM modes and pick best
             try:
                 img = Image.open(io.BytesIO(img_bytes))
                 processed = summarizer._preprocess_image_for_ocr(img, for_easyocr=False)
-                text_tess = summarizer._pytesseract.image_to_string(
-                    processed,
-                    lang=summarizer.TESSERACT_LANGUAGES,
-                    config="--psm 6 --oem 3",
-                ).strip()
+
+                tess_psm_modes = [6, 4, 3, 1]
+                tess_results = []
+                for psm in tess_psm_modes:
+                    try:
+                        text = summarizer._pytesseract.image_to_string(
+                            processed,
+                            lang=summarizer.TESSERACT_LANGUAGES,
+                            config=f"--psm {psm} --oem 3",
+                        ).strip()
+                        if text:
+                            tess_results.append((text, psm))
+                    except Exception:
+                        continue
+
+                # Also try raw (unprocessed) image with PSM 6
+                try:
+                    text_raw = summarizer._pytesseract.image_to_string(
+                        img,
+                        lang=summarizer.TESSERACT_LANGUAGES,
+                        config="--psm 6 --oem 3",
+                    ).strip()
+                    if text_raw:
+                        tess_results.append((text_raw, 0))  # 0 = raw
+                except Exception:
+                    pass
+
+                # Pick best: prefer longer text with good alpha ratio
+                text_tess = ""
+                best_tess_psm = -1
+                for text_candidate, psm_mode in tess_results:
+                    if len(text_candidate) > len(text_tess):
+                        alpha_count = sum(1 for c in text_candidate if c.isalpha())
+                        if alpha_count > 10 or len(text_candidate) > len(text_tess) * 2:
+                            text_tess = text_candidate
+                            best_tess_psm = psm_mode
+
                 if text_tess and len(text_tess) > len(best_text):
                     best_text = text_tess
-                    best_engine = "Tesseract"
+                    best_engine = f"Tesseract(PSM{best_tess_psm})" if best_tess_psm > 0 else "Tesseract(raw)"
             except Exception as e:
                 print(f"    Tesseract page {i+1} failed: {e}")
 

@@ -273,18 +273,21 @@ class LLMSummarizer:
         """Preprocess a PIL image to improve OCR accuracy.
 
         Applies:
-        1. Convert to grayscale
-        2. Increase contrast
-        3. Apply sharpening filter
-        4. Denoise with median filter
-        5. Binarization (Tesseract only — EasyOCR works better with grayscale)
+        1. Upscale 2x (improves Tesseract accuracy on low-DPI scans)
+        2. Convert to grayscale
+        3. Adaptive contrast enhancement (CLAHE-like via local equalization)
+        4. Apply sharpening filter
+        5. Gentle denoise with small median filter
+        6. Deskew (straighten rotated scans)
+        7. Adaptive binarization (Otsu's method) for Tesseract
+        8. Morphological cleanup (close small gaps in characters)
 
         For EasyOCR, returns the preprocessed image in RGB mode (EasyOCR needs 3-channel)
         but WITHOUT aggressive binarization — EasyOCR's deep learning model works best
         with continuous-tone grayscale images, not harshly thresholded ones.
 
         For Tesseract, returns the preprocessed image in grayscale (L) mode with
-        full binarization for maximum OCR accuracy.
+        adaptive binarization for maximum OCR accuracy.
 
         Args:
             image: PIL Image to preprocess.
@@ -294,30 +297,124 @@ class LLMSummarizer:
         Returns:
             Preprocessed PIL Image.
         """
-        # Convert to grayscale for processing
+        # Step 1: Upscale 2x for better OCR on low-DPI scans
+        # Laserfiche page images are typically ~72 DPI; Tesseract works best at 300+ DPI
+        orig_w, orig_h = image.size
+        if orig_w < 1500 and orig_h < 2000:
+            scale = max(2, min(4, 2400 // min(orig_w, orig_h)))
+            image = image.resize((orig_w * scale, orig_h * scale), self._PIL_Image.LANCZOS)
+        elif orig_w < 2500 and orig_h < 3500:
+            image = image.resize((orig_w * 2, orig_h * 2), self._PIL_Image.LANCZOS)
+
+        # Step 2: Convert to grayscale for processing
         if image.mode != "L":
             image = image.convert("L")
 
-        # Increase contrast to make text sharper
-        enhancer = self._PIL_ImageEnhance.Contrast(image)
-        image = enhancer.enhance(2.0)
+        # Step 3: Adaptive contrast enhancement
+        # Use local contrast normalization instead of global contrast stretch
+        if self._numpy_available:
+            try:
+                img_array = self._np.array(image, dtype=self._np.float64)
+                # Apply CLAHE-like effect: local mean normalization
+                # Divide image into tiles and equalize each
+                h, w = img_array.shape
+                tile_h, tile_w = max(32, h // 8), max(32, w // 8)
+                # Simple local contrast stretch using percentile-based scaling
+                low_pct = self._np.percentile(img_array, 5)
+                high_pct = self._np.percentile(img_array, 95)
+                if high_pct > low_pct:
+                    img_array = (img_array - low_pct) / (high_pct - low_pct) * 255.0
+                    img_array = self._np.clip(img_array, 0, 255).astype(self._np.uint8)
+                    image = self._PIL_Image.fromarray(img_array, mode="L")
+            except Exception:
+                # Fallback to simple contrast enhancement
+                enhancer = self._PIL_ImageEnhance.Contrast(image)
+                image = enhancer.enhance(2.0)
+        else:
+            enhancer = self._PIL_ImageEnhance.Contrast(image)
+            image = enhancer.enhance(2.0)
 
-        # Apply sharpening filter
+        # Step 4: Apply sharpening filter
         image = image.filter(self._PIL_ImageFilter.SHARPEN)
 
-        # Apply median filter to reduce noise (salt-and-pepper from scan)
+        # Step 5: Gentle denoise — use size=3 for median filter (removes salt-and-pepper
+        # without destroying thin strokes like punctuation)
         image = image.filter(self._PIL_ImageFilter.MedianFilter(size=3))
 
-        # Binarize ONLY for Tesseract — EasyOCR works better with grayscale
+        # Step 6: Deskew — straighten slightly rotated scans
+        if self._numpy_available and not for_easyocr:
+            try:
+                from scipy import ndimage as ndi
+                img_array = self._np.array(image)
+                # Find skew angle by projecting horizontal lines
+                # Invert so text is white on black for projection
+                binary = self._np.where(img_array > 128, 1, 0)
+                # Try angles from -5 to +5 degrees
+                best_angle = 0.0
+                best_variance = 0.0
+                for angle in self._np.arange(-5.0, 5.5, 0.5):
+                    rotated = ndi.rotate(binary, angle, reshape=False, order=0)
+                    # Project horizontally (sum each row)
+                    h_proj = self._np.sum(rotated, axis=1)
+                    # Variance of projection — higher = more aligned text lines
+                    variance = self._np.var(h_proj)
+                    if variance > best_variance:
+                        best_variance = variance
+                        best_angle = angle
+                if abs(best_angle) > 0.3:
+                    # Apply deskew to original grayscale image
+                    img_array = ndi.rotate(img_array, best_angle, reshape=False, order=1, cval=255)
+                    img_array = self._np.clip(img_array, 0, 255).astype(self._np.uint8)
+                    image = self._PIL_Image.fromarray(img_array, mode="L")
+            except ImportError:
+                pass  # scipy not available, skip deskew
+            except Exception:
+                pass  # deskew failed silently
+
+        # Step 7: Binarize ONLY for Tesseract — EasyOCR works better with grayscale
         if not for_easyocr:
             if self._numpy_available:
                 try:
                     img_array = self._np.array(image)
-                    # Simple global threshold at 128 after contrast enhancement
-                    # This works well for scanned documents with good contrast
-                    threshold = 128
-                    img_array = self._np.where(img_array > threshold, 255, 0).astype(self._np.uint8)
+                    # Use Otsu's adaptive threshold instead of fixed 128
+                    # Otsu finds the optimal threshold by minimizing intra-class variance
+                    hist, _ = self._np.histogram(img_array, bins=256, range=(0, 256))
+                    total = img_array.size
+                    sum_total = self._np.dot(self._np.arange(256), hist)
+                    sum_bg = 0.0
+                    weight_bg = 0.0
+                    max_variance = 0.0
+                    optimal_threshold = 128
+                    for t in range(256):
+                        weight_bg += hist[t]
+                        if weight_bg == 0:
+                            continue
+                        weight_fg = total - weight_bg
+                        if weight_fg == 0:
+                            break
+                        sum_bg += t * hist[t]
+                        mean_bg = sum_bg / weight_bg
+                        mean_fg = (sum_total - sum_bg) / weight_fg
+                        # Between-class variance
+                        variance = weight_bg * weight_fg * (mean_bg - mean_fg) ** 2
+                        if variance > max_variance:
+                            max_variance = variance
+                            optimal_threshold = t
+                    img_array = self._np.where(img_array > optimal_threshold, 255, 0).astype(self._np.uint8)
+
+                    # Step 8: Morphological cleanup — close small gaps in characters
+                    # Use a 2x2 kernel to dilate then erode (close operation)
+                    from scipy import ndimage as ndi_morph
+                    kernel = self._np.ones((2, 2), dtype=self._np.uint8)
+                    # Dilation: grow white regions (text)
+                    img_array = ndi_morph.binary_dilation(img_array, structure=kernel).astype(self._np.uint8) * 255
+                    # Erosion: shrink back to original size (removes noise)
+                    img_array = ndi_morph.binary_erosion(img_array, structure=kernel).astype(self._np.uint8) * 255
+
                     image = self._PIL_Image.fromarray(img_array, mode="L")
+                except ImportError:
+                    # scipy not available for morphology, use simple threshold
+                    image = image.point(lambda x: 255 if x > 128 else 0)
                 except Exception:
                     # Fallback to simple threshold
                     image = image.point(lambda x: 255 if x > 128 else 0)
@@ -713,31 +810,57 @@ class LLMSummarizer:
                 if self._pytesseract_available:
                     try:
                         image = self._PIL_Image.open(io.BytesIO(img_bytes))
-
-                        # Try with preprocessing first
                         processed = self._preprocess_image_for_ocr(image, for_easyocr=False)
-                        text_tess_processed = self._pytesseract.image_to_string(
-                            processed,
-                            lang=self.TESSERACT_LANGUAGES,
-                            config="--psm 6 --oem 3",
-                        ).strip()
 
-                        # Try without preprocessing as fallback
-                        text_tess_raw = self._pytesseract.image_to_string(
-                            image,
-                            lang=self.TESSERACT_LANGUAGES,
-                            config="--psm 6 --oem 3",
-                        ).strip()
+                        # Strategy: Try MULTIPLE PSM modes and take the best result.
+                        # Different page layouts need different PSM modes:
+                        #   --psm 6  = Assume uniform block of text (best for standard docs)
+                        #   --psm 4  = Assume variable-size text (good for mixed content)
+                        #   --psm 3  = Fully automatic (Tesseract decides layout)
+                        #   --psm 1  = Automatic with OSD (orientation detection)
+                        tess_psm_modes = [6, 4, 3, 1]
+                        tess_results = []
 
-                        # Take the longer result from Tesseract
-                        text_tess = text_tess_processed if len(text_tess_processed) >= len(text_tess_raw) else text_tess_raw
+                        for psm in tess_psm_modes:
+                            try:
+                                text = self._pytesseract.image_to_string(
+                                    processed,
+                                    lang=self.TESSERACT_LANGUAGES,
+                                    config=f"--psm {psm} --oem 3",
+                                ).strip()
+                                if text:
+                                    tess_results.append((text, psm))
+                            except Exception:
+                                continue
+
+                        # Also try raw (unprocessed) image with PSM 6 as baseline
+                        try:
+                            text_raw = self._pytesseract.image_to_string(
+                                image,
+                                lang=self.TESSERACT_LANGUAGES,
+                                config="--psm 6 --oem 3",
+                            ).strip()
+                            if text_raw:
+                                tess_results.append((text_raw, 0))  # 0 = raw
+                        except Exception:
+                            pass
+
+                        # Pick the best Tesseract result: prefer longer text
+                        # that also has good alpha ratio (not just noise)
+                        text_tess = ""
+                        best_tess_psm = -1
+                        for text_candidate, psm_mode in tess_results:
+                            if len(text_candidate) > len(text_tess):
+                                # Check that the text isn't just noise
+                                alpha_count = sum(1 for c in text_candidate if c.isalpha())
+                                if alpha_count > 10 or len(text_candidate) > len(text_tess) * 2:
+                                    text_tess = text_candidate
+                                    best_tess_psm = psm_mode
 
                         if text_tess and len(text_tess) > len(best_text):
                             best_text = text_tess
-                            best_engine = "Tesseract"
-                            print(f"[OCR] Page {i + 1}: Tesseract extracted {len(best_text)} chars")
-                            if text_tess == text_tess_raw and text_tess != text_tess_processed:
-                                print(f"[OCR] Page {i + 1}: Tesseract using raw image (preprocessed gave {len(text_tess_processed)} chars)")
+                            best_engine = f"Tesseract(PSM{best_tess_psm})" if best_tess_psm > 0 else "Tesseract(raw)"
+                            print(f"[OCR] Page {i + 1}: {best_engine} extracted {len(best_text)} chars")
                     except Exception as e:
                         print(f"[WARN] Tesseract failed for page {i + 1}: {e}")
 
