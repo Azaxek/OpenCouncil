@@ -19,6 +19,7 @@ interface MinutesDetail {
 }
 
 interface SummaryData {
+  big_picture: string;
   summary: string;
   key_decisions: Array<{
     title: string;
@@ -41,6 +42,10 @@ interface SummaryData {
     plain_english: string;
     category: string;
     action_needed: string;
+  }>;
+  what_you_can_do: Array<{
+    action: string;
+    who: string;
   }>;
 }
 
@@ -138,6 +143,18 @@ export default function MinutesDetailPage({
       "Old Business": "badge-purple",
       "Staff Reports": "badge-yellow",
       "Executive Session": "badge-red",
+      // Life-Centric categories
+      "Your Neighborhood": "badge-green",
+      "Your Tax Dollars": "badge-yellow",
+      "City Calendar": "badge-purple",
+      "Your Commute": "badge-blue",
+      "Your Utilities": "badge-blue",
+      "Your Parks & Trails": "badge-green",
+      "Your Safety": "badge-red",
+      "Meeting Logistics": "badge-purple",
+      "Community Briefing": "badge-blue",
+      "City Planning": "badge-yellow",
+      "Council Action": "badge-green",
     };
     return map[cat || ""] || "badge-purple";
   };
@@ -303,6 +320,29 @@ export default function MinutesDetailPage({
         {/* Summary content */}
         {summary && (
           <div className="space-y-6">
+            {/* Big Picture — TL;DR at the very top */}
+            {summary.big_picture && (
+              <div
+                style={{
+                  background: "linear-gradient(135deg, var(--accent-blue), var(--accent-purple))",
+                  borderRadius: "0.75rem",
+                  padding: "1.25rem 1.5rem",
+                  color: "#fff",
+                }}
+              >
+                <p
+                  style={{
+                    fontSize: "1.125rem",
+                    fontWeight: 600,
+                    lineHeight: 1.5,
+                    margin: 0,
+                  }}
+                >
+                  🏛️ {summary.big_picture}
+                </p>
+              </div>
+            )}
+
             {/* Overview */}
             <div>
               <h3 className="news-section-tag" style={{ marginBottom: "0.5rem" }}>
@@ -343,7 +383,7 @@ export default function MinutesDetailPage({
                       </p>
                       {d.impact && (
                         <p style={{ fontSize: "0.8125rem", color: "var(--foreground-secondary)", marginTop: "0.5rem", fontStyle: "italic" }}>
-                          Affects: {d.impact}
+                          🏡 How this affects you: {d.impact}
                         </p>
                       )}
                     </div>
@@ -422,6 +462,39 @@ export default function MinutesDetailPage({
                           Deadline: {c.deadline}
                         </p>
                       )}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* What You Can Do */}
+            {summary.what_you_can_do && summary.what_you_can_do.length > 0 && (
+              <div
+                style={{
+                  background: "var(--background-secondary)",
+                  borderRadius: "0.75rem",
+                  padding: "1.25rem 1.5rem",
+                  border: "1px solid var(--border)",
+                }}
+              >
+                <h3 className="news-section-tag" style={{ marginBottom: "0.75rem" }}>
+                  ✅ What You Can Do
+                </h3>
+                <div className="space-y-3">
+                  {summary.what_you_can_do.map((w, i) => (
+                    <div key={i} style={{ display: "flex", alignItems: "flex-start", gap: "0.75rem" }}>
+                      <span style={{ fontSize: "1.25rem", lineHeight: 1.4, flexShrink: 0 }}>👉</span>
+                      <div>
+                        <p style={{ fontSize: "0.9375rem", lineHeight: 1.5, margin: 0 }}>
+                          {w.action}
+                        </p>
+                        {w.who && (
+                          <p style={{ fontSize: "0.8125rem", color: "var(--foreground-secondary)", marginTop: "0.25rem" }}>
+                            For: {w.who}
+                          </p>
+                        )}
+                      </div>
                     </div>
                   ))}
                 </div>

@@ -39,7 +39,8 @@ def main():
     # Read summaries
     summary_rows = conn.execute(
         "SELECT minutes_id, summary, key_decisions, budget_items, "
-        "public_comment_opportunities, items FROM minutes_summaries"
+        "public_comment_opportunities, items, big_picture, what_you_can_do "
+        "FROM minutes_summaries"
     ).fetchall()
     summaries = {r["minutes_id"]: r for r in summary_rows}
 
@@ -72,9 +73,13 @@ def main():
                 json.loads(s["public_comment_opportunities"]) if s["public_comment_opportunities"] else []
             )
             payload["items"] = json.loads(s["items"]) if s["items"] else []
+            payload["big_picture"] = s["big_picture"] or ""
+            payload["what_you_can_do"] = json.loads(s["what_you_can_do"]) if s["what_you_can_do"] else []
             print(f"  Summary: {s['summary'][:100]}...")
             print(f"  Key decisions: {len(payload['key_decisions'])}")
             print(f"  Items: {len(payload['items'])}")
+            print(f"  Big Picture: {s['big_picture'][:80] if s['big_picture'] else '(none)'}...")
+            print(f"  What You Can Do: {len(payload['what_you_can_do'])} items")
         else:
             print("  No summary available")
 

@@ -135,6 +135,8 @@ def _init_sqlite():
                 budget_items TEXT NOT NULL DEFAULT '[]',
                 public_comment_opportunities TEXT NOT NULL DEFAULT '[]',
                 items TEXT NOT NULL DEFAULT '[]',
+                big_picture TEXT NOT NULL DEFAULT '',
+                what_you_can_do TEXT NOT NULL DEFAULT '[]',
                 model_used TEXT NOT NULL DEFAULT 'deepseek-chat',
                 created_at TEXT NOT NULL DEFAULT (datetime('now')),
                 updated_at TEXT NOT NULL DEFAULT (datetime('now')),
@@ -182,6 +184,8 @@ def _init_pg():
                     budget_items TEXT NOT NULL DEFAULT '[]',
                     public_comment_opportunities TEXT NOT NULL DEFAULT '[]',
                     items TEXT NOT NULL DEFAULT '[]',
+                    big_picture TEXT NOT NULL DEFAULT '',
+                    what_you_can_do TEXT NOT NULL DEFAULT '[]',
                     model_used TEXT NOT NULL DEFAULT 'deepseek-chat',
                     created_at TIMESTAMP NOT NULL DEFAULT NOW(),
                     updated_at TIMESTAMP NOT NULL DEFAULT NOW()
@@ -425,8 +429,9 @@ def _save_minutes_summary_sqlite(minutes_id: str, summary: SummaryResponse) -> N
         conn.execute(
             """INSERT OR REPLACE INTO minutes_summaries
                (minutes_id, meeting_date, meeting_type, summary,
-                key_decisions, budget_items, public_comment_opportunities, items)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                key_decisions, budget_items, public_comment_opportunities, items,
+                big_picture, what_you_can_do)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 minutes_id,
                 summary.meeting_date.isoformat(),
@@ -436,6 +441,8 @@ def _save_minutes_summary_sqlite(minutes_id: str, summary: SummaryResponse) -> N
                 json.dumps([b.model_dump() if hasattr(b, 'model_dump') else b for b in summary.budget_items]),
                 json.dumps([p.model_dump() if hasattr(p, 'model_dump') else p for p in summary.public_comment_opportunities]),
                 json.dumps([i.model_dump() if hasattr(i, 'model_dump') else i for i in summary.items]),
+                summary.big_picture,
+                json.dumps([w.model_dump() if hasattr(w, 'model_dump') else w for w in summary.what_you_can_do]),
             ),
         )
         conn.commit()
@@ -451,8 +458,9 @@ def _save_minutes_summary_pg(minutes_id: str, summary: SummaryResponse) -> None:
             cur.execute(
                 """INSERT INTO minutes_summaries
                    (minutes_id, meeting_date, meeting_type, summary,
-                    key_decisions, budget_items, public_comment_opportunities, items)
-                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                    key_decisions, budget_items, public_comment_opportunities, items,
+                    big_picture, what_you_can_do)
+                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                    ON CONFLICT (minutes_id) DO UPDATE SET
                        meeting_date = EXCLUDED.meeting_date,
                        meeting_type = EXCLUDED.meeting_type,
@@ -461,6 +469,8 @@ def _save_minutes_summary_pg(minutes_id: str, summary: SummaryResponse) -> None:
                        budget_items = EXCLUDED.budget_items,
                        public_comment_opportunities = EXCLUDED.public_comment_opportunities,
                        items = EXCLUDED.items,
+                       big_picture = EXCLUDED.big_picture,
+                       what_you_can_do = EXCLUDED.what_you_can_do,
                        updated_at = NOW()""",
                 (
                     minutes_id,
@@ -471,6 +481,8 @@ def _save_minutes_summary_pg(minutes_id: str, summary: SummaryResponse) -> None:
                     json.dumps([b.model_dump() if hasattr(b, 'model_dump') else b for b in summary.budget_items]),
                     json.dumps([p.model_dump() if hasattr(p, 'model_dump') else p for p in summary.public_comment_opportunities]),
                     json.dumps([i.model_dump() if hasattr(i, 'model_dump') else i for i in summary.items]),
+                    summary.big_picture,
+                    json.dumps([w.model_dump() if hasattr(w, 'model_dump') else w for w in summary.what_you_can_do]),
                 ),
             )
         conn.commit()
@@ -509,6 +521,8 @@ def _get_minutes_summary_sqlite(minutes_id: str) -> Optional[SummaryResponse]:
             budget_items=json.loads(row["budget_items"]),
             public_comment_opportunities=json.loads(row["public_comment_opportunities"]),
             items=json.loads(row["items"]),
+            big_picture=row["big_picture"] if "big_picture" in row.keys() else "",
+            what_you_can_do=json.loads(row["what_you_can_do"]) if "what_you_can_do" in row.keys() else [],
         )
     finally:
         conn.close()
@@ -544,6 +558,8 @@ def _get_minutes_summary_pg(minutes_id: str) -> Optional[SummaryResponse]:
                 budget_items=json.loads(row["budget_items"]),
                 public_comment_opportunities=json.loads(row["public_comment_opportunities"]),
                 items=json.loads(row["items"]),
+                big_picture=row.get("big_picture", ""),
+                what_you_can_do=json.loads(row.get("what_you_can_do", "[]")),
             )
     finally:
         conn.close()

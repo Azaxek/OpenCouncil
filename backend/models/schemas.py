@@ -47,8 +47,10 @@ class SummaryResponse(BaseModel):
     minutes_id: str
     meeting_date: datetime
     meeting_type: str
+    big_picture: str = ""
     summary: str
     key_decisions: list[dict] = Field(default_factory=list)
     budget_items: list[dict] = Field(default_factory=list)
     public_comment_opportunities: list[dict] = Field(default_factory=list)
     items: list[dict] = Field(default_factory=list)
+    what_you_can_do: list[dict] = Field(default_factory=list)

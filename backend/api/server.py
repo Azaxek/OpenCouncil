@@ -482,6 +482,8 @@ class SeedRequest(BaseModel):
     budget_items: list[dict] = Field(default_factory=list)
     public_comment_opportunities: list[dict] = Field(default_factory=list)
     items: list[dict] = Field(default_factory=list)
+    big_picture: str = ""
+    what_you_can_do: list[dict] = Field(default_factory=list)
 
 
 @app.post("/api/minutes/seed")
@@ -518,6 +520,8 @@ async def seed_minutes(request: SeedRequest):
             budget_items=request.budget_items,
             public_comment_opportunities=request.public_comment_opportunities,
             items=request.items,
+            big_picture=request.big_picture,
+            what_you_can_do=request.what_you_can_do,
         )
         save_minutes_summary(request.minutes_id, summary)
 
