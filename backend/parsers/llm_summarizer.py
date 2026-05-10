@@ -96,45 +96,47 @@ and note in the summary that the text quality is degraded.
 ### JSON OUTPUT FORMAT — STRICT STRUCTURE
 
 Each item in the arrays below MUST be a JSON object (dictionary), NOT a plain string.
-Every item MUST have a "description" field at minimum.
+Every item MUST have the EXACT field names shown below.
 
 {
   "summary": "2-3 paragraph plain-language overview. If text quality is poor, state that clearly. Extract whatever information is available.",
 
   "key_decisions": [
     {
-      "description": "What was decided, in plain language",
-      "vote": "Optional: vote tally if explicitly stated (e.g. '5-0'). Omit this field if no vote count is present in the text.",
-      "details": "Optional: additional context about the decision"
+      "title": "Short title of the decision (e.g. 'Approved tax abatement for Confia Homes')",
+      "plain_english": "What was decided, explained in plain language for residents",
+      "impact": "Optional: who or what this decision affects (e.g. 'Residents in the 1000 block of Johnson St.'). Omit if not clear.",
+      "category": "Optional: category like 'Housing', 'Finance', 'Infrastructure', 'Public Safety', 'Parks', 'Administrative'. Omit if not clear."
     }
   ],
 
   "budget_items": [
     {
-      "description": "What the budget item is for",
-      "amount": "Optional: dollar amount if explicitly stated. Omit if not present.",
-      "status": "Optional: approved/denied/tabled/etc. Omit if not stated."
+      "title": "Short name of the budget item (e.g. 'Street Repair Fund')",
+      "amount": "Optional: dollar amount if explicitly stated (e.g. '$50,000'). Omit if not present.",
+      "description": "What the budget item is for, in plain language"
     }
   ],
 
   "public_comment_opportunities": [
     {
-      "description": "Description of the public comment opportunity or comments made",
-      "speaker": "Optional: name of speaker if explicitly mentioned. Omit if not present.",
-      "topic": "Optional: topic of the comment if explicitly stated. Omit if not present."
+      "item": "Description of the public comment opportunity or comments made",
+      "deadline": "Optional: deadline for submitting comments if mentioned. Omit if not present.",
+      "how": "Optional: how to submit comments (e.g. 'In person at City Hall', 'Email the City Clerk'). Omit if not stated."
     }
   ],
 
   "items": [
     {
-      "description": "Description of the agenda item or action taken",
-      "action": "Optional: what action was taken (approved/denied/received/etc.). Omit if not stated.",
-      "details": "Optional: additional details about the item"
+      "title": "Short title of the agenda item (e.g. 'Call to Order', 'Resolution 2026-014')",
+      "plain_english": "Description of what happened for this item",
+      "category": "Optional: category like 'Procedural', 'Resolution', 'Presentation', 'Discussion', 'Public Hearing'. Omit if not clear.",
+      "action_needed": "Optional: what action, if any, residents need to take (e.g. 'Attend next meeting', 'Submit comments'). Omit if none."
     }
   ]
 }
 
-IMPORTANT: Every item in every array MUST be a JSON object with a "description" field.
+IMPORTANT: Every item in every array MUST be a JSON object with the EXACT field names shown above.
 NEVER return plain strings in arrays. If you have no information for a section, return [].
 REMEMBER: Empty arrays are CORRECT. Fabricated data is WRONG. If in doubt, return empty arrays."""
 
