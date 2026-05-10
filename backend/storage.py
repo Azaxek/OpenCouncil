@@ -197,6 +197,22 @@ def _init_pg():
             cur.execute("""
                 CREATE INDEX IF NOT EXISTS idx_minutes_city ON minutes(city, state);
             """)
+            # Migration: add big_picture and what_you_can_do columns if they don't exist
+            # Safe to run multiple times — IF NOT EXISTS prevents errors
+            try:
+                cur.execute("""
+                    ALTER TABLE minutes_summaries
+                    ADD COLUMN IF NOT EXISTS big_picture TEXT NOT NULL DEFAULT ''
+                """)
+            except Exception:
+                pass  # Some PG versions don't support IF NOT EXISTS for columns
+            try:
+                cur.execute("""
+                    ALTER TABLE minutes_summaries
+                    ADD COLUMN IF NOT EXISTS what_you_can_do TEXT NOT NULL DEFAULT '[]'
+                """)
+            except Exception:
+                pass
         conn.commit()
     finally:
         conn.close()
