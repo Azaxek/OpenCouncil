@@ -327,7 +327,7 @@ export default function MinutesDetailPage({
                   background: "linear-gradient(135deg, var(--accent-blue), var(--accent-purple))",
                   borderRadius: "0.75rem",
                   padding: "1.25rem 1.5rem",
-                  color: "#fff",
+                  color: "#000",
                 }}
               >
                 <p
