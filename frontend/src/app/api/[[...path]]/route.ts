@@ -1,17 +1,20 @@
 /**
- * Next.js API Route Handler — proxy to the Python backend on HF Spaces.
+ * Next.js API Route Handler — proxy to the Python backend.
  *
  * Local dev: Proxies to localhost:8000 (Python backend).
- * Vercel: Proxies to HF Spaces backend URL (set via NEXT_PUBLIC_API_URL env var).
- *
- * This eliminates the need for Python on Vercel entirely.
+ * Vercel (experimentalServices): Backend is at /_/backend within the same deployment.
+ * Custom: Set NEXT_PUBLIC_API_URL env var to override the backend URL.
  */
 import { NextRequest, NextResponse } from "next/server";
 
 function getBackendUrl(): string {
-  // On Vercel, use the HF Spaces backend URL
+  // Custom backend URL takes priority
   if (process.env.NEXT_PUBLIC_API_URL) {
     return process.env.NEXT_PUBLIC_API_URL.trim();
+  }
+  // When deployed on Vercel with experimentalServices, backend is at /_/backend
+  if (process.env.VERCEL) {
+    return "/_/backend";
   }
   // Local dev
   return "http://localhost:8000";
@@ -26,11 +29,11 @@ function getClientIp(request: NextRequest): string {
 
 export async function GET(request: NextRequest) {
   const url = new URL(request.url);
-  const path = url.pathname;
+  const path = url.pathname.replace(/^\/api/, ""); // strip /api prefix
   const backendUrl = getBackendUrl();
 
   try {
-    const backendReqUrl = `${backendUrl}${path}${url.search}`;
+    const backendReqUrl = `${backendUrl}/api${path}${url.search}`;
     const response = await fetch(backendReqUrl, {
       method: "GET",
       headers: {
@@ -54,12 +57,12 @@ export async function GET(request: NextRequest) {
 
 export async function POST(request: NextRequest) {
   const url = new URL(request.url);
-  const path = url.pathname;
+  const path = url.pathname.replace(/^\/api/, "");
   const backendUrl = getBackendUrl();
 
   try {
     const body = await request.text();
-    const backendReqUrl = `${backendUrl}${path}${url.search}`;
+    const backendReqUrl = `${backendUrl}/api${path}${url.search}`;
     const response = await fetch(backendReqUrl, {
       method: "POST",
       headers: {
@@ -67,7 +70,7 @@ export async function POST(request: NextRequest) {
         "x-forwarded-for": getClientIp(request),
       },
       body,
-      signal: AbortSignal.timeout(60000), // 60s for summarization
+      signal: AbortSignal.timeout(60000),
     });
     const data = await response.json();
     return NextResponse.json(data, { status: response.status });

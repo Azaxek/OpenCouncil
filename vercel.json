@@ -1,41 +1,13 @@
 {
-  "buildCommand": null,
-  "outputDirectory": null,
-  "installCommand": null,
-  "git": {
-    "deploymentEnabled": {
-      "backend": true,
-      "frontend": true
+    "experimentalServices": {
+        "frontend": {
+            "root": "frontend",
+            "routePrefix": "/",
+            "framework": "nextjs"
+        },
+        "backend": {
+            "root": "backend",
+            "routePrefix": "/_/backend"
+        }
     }
-  },
-  "builds": [
-    {
-      "src": "frontend/package.json",
-      "use": "@vercel/next",
-      "config": {
-        "installCommand": "cd frontend && npm install",
-        "buildCommand": "cd frontend && npm run build",
-        "outputDirectory": "../frontend/.next"
-      }
-    },
-    {
-      "src": "backend/api/index.py",
-      "use": "@vercel/python",
-      "config": {
-        "runtime": "python3.12",
-        "installCommand": "pip install -r backend/requirements.txt",
-        "entrypoint": "api/index.py"
-      }
-    }
-  ],
-  "routes": [
-    {
-      "src": "/api/(.*)",
-      "dest": "backend/api/index.py"
-    },
-    {
-      "src": "/(.*)",
-      "dest": "frontend/$1"
-    }
-  ]
 }

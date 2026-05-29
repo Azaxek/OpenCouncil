@@ -1,14 +1,12 @@
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
-  // Enable React strict mode for better development
   reactStrictMode: true,
 
-  // Rewrite API calls to the backend during local development only.
-  // On Vercel (production), the API route handler at app/api/[[...path]]/route.ts
-  // proxies to the HF Space backend via NEXT_PUBLIC_API_URL env var.
+  // Rewrite API calls to the backend.
+  // Local dev: proxied to localhost:8000
+  // Vercel (monorepo services): proxied to /_/backend via vercel.json experimentalServices
   async rewrites() {
-    // Only apply rewrites when NEXT_PUBLIC_API_URL is NOT set (i.e., local dev)
     if (!process.env.NEXT_PUBLIC_API_URL) {
       return [
         {
