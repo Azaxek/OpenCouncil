@@ -1,23 +1,24 @@
+# Core API
 fastapi>=0.110.0
 uvicorn[standard]>=0.27.0
 httpx>=0.27.0
 beautifulsoup4>=4.12.0
-pypdf2>=3.0.0
 pydantic>=2.5.0
 python-multipart>=0.0.9
 python-dotenv>=1.0.0
+
+# Groq AI client
 openai>=1.0.0
+
+# Encryption for API keys
 cryptography>=42.0.0
+
+# Database — PostgreSQL for Vercel, SQLite for local
 psycopg2-binary>=2.9.0
-pytesseract>=0.3.10
+
+# Vercel serverless adapter
+mangum>=0.17.0
+
+# Minimal image handling (Pillow only, not PyTorch)
 Pillow>=10.0.0
-PyMuPDF>=1.23.0
 numpy>=1.24.0
-easyocr>=1.7.0
-# Note: Using html.parser instead of lxml to avoid build issues
-# Note: EasyOCR is the primary OCR engine (MIT license, better accuracy than Tesseract).
-# pytesseract + Pillow + PyMuPDF + numpy provide fallback OCR for scanned document images.
-# PyMuPDF renders PDF pages to images without external dependencies (no poppler needed).
-# numpy enables adaptive thresholding for better OCR binarization.
-# scipy enables deskew (rotation correction) and morphological cleanup for better OCR.
-scipy>=1.11.0

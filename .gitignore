@@ -1,1 +1,69 @@
+# Dependencies
+node_modules/
+.pnp
+.pnp.js
+
+# Build outputs
+.next/
+out/
+build/
+dist/
+
+# Environment
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+# Database
+*.db
+*.sqlite3
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.venv/
+venv/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Vercel
 .vercel
+
+# Testing
+_check_syntax.py
+test_*.py
+test_*.html
+test_*.txt
+test_*.pdf
+test_*.png
+test_*.aspx
+
+# Debug captures
+cookies.txt
+docviewer8.js
+rss_feed.xml
+lf_*.xml
+laserfiche_*.html
+agenda_center.html
+browse_page.html
+city_council.html
+government.html
+update_response.html
+test_page*.txt
+test_myweblink.html
+
+# Plans
+plans/

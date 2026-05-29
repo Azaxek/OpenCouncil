@@ -35,7 +35,6 @@ export default function MinutesPage() {
   const [fetching, setFetching] = useState(false);
 
   const loadMinutes = useCallback(async () => {
-    setLoading(true);
     setError(null);
     try {
       const [minutesRes, cityRes] = await Promise.all([

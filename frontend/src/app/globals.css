@@ -1,7 +1,7 @@
 @import "tailwindcss";
 
 /* ==========================================================================
-   Civic City Hub — Professional News Site Theme
+   CivillySimplified — Professional News Site Theme
    ==========================================================================
    A clean, modern news-site design with:
    - Light/dark mode support (system preference + manual toggle)
@@ -293,6 +293,12 @@ body {
   background: var(--brand-light);
   color: var(--brand);
   border: 1px solid color-mix(in srgb, var(--brand) 20%, transparent);
+}
+
+.badge-warning {
+  background: rgba(217, 119, 6, 0.1);
+  color: var(--accent-yellow);
+  border: 1px solid rgba(217, 119, 6, 0.2);
 }
 
 /* Skeleton loading */

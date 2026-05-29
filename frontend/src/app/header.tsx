@@ -51,7 +51,6 @@ export function Header() {
 
   // Initialize theme from localStorage
   useEffect(() => {
-    setMounted(true);
     try {
       const saved = localStorage.getItem("cch-theme") as ThemeMode | null;
       if (saved) {
@@ -59,6 +58,7 @@ export function Header() {
         applyTheme(saved);
       }
     } catch {}
+    setMounted(true);
   }, [applyTheme]);
 
   // --- City Detection ---
@@ -119,7 +119,7 @@ export function Header() {
                   lineHeight: 1,
                 }}
               >
-                Civic City Hub
+                OpenCouncil
               </h1>
               <p
                 style={{

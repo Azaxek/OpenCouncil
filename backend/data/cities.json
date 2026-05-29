@@ -1,5 +1,5 @@
 {
-  "description": "City database for Civic City Hub. Each city has a connector config and optional IP range hints for geolocation.",
+  "description": "City database for OpenCouncil. Each city has a connector config and optional IP range hints for geolocation.",
   "default_city": "paris-tx",
   "cities": [
     {
@@ -16,6 +16,38 @@
       "county": "Lamar County",
       "description": "A city in Northeast Texas known as the 'Second Star of Texas'",
       "tags": ["rural", "small-city", "texas"],
+      "active": true
+    },
+    {
+      "id": "sulphur-springs-tx",
+      "name": "Sulphur Springs",
+      "state": "TX",
+      "full_name": "Sulphur Springs, Texas",
+      "timezone": "America/Chicago",
+      "website_url": "https://www.sulphurspringstx.org",
+      "council_page_url": "https://www.sulphurspringstx.org/commissions/city_council/index.php",
+      "connector_type": "generic_pdf",
+      "population": 16000,
+      "county": "Hopkins County",
+      "description": "A city in Northeast Texas known for its historic downtown and Coleman Park",
+      "tags": ["rural", "small-city", "texas"],
+      "active": true
+    },
+    {
+      "id": "frisco-tx",
+      "name": "Frisco",
+      "state": "TX",
+      "full_name": "Frisco, Texas",
+      "timezone": "America/Chicago",
+      "website_url": "https://www.friscotexas.gov",
+      "agenda_center_url": "https://www.friscotexas.gov/AgendaCenter",
+      "connector_type": "onbase",
+      "onbase_url": "https://agenda.friscotexas.gov/OnBaseAgendaOnline",
+      "onbase_category_id": "105",
+      "population": 200000,
+      "county": "Collin County",
+      "description": "A rapidly growing city in North Texas known for its sports venues and family-friendly community",
+      "tags": ["suburban", "large-city", "texas"],
       "active": true
     }
   ]

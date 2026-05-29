@@ -1,5 +1,5 @@
 """
-LLM-powered summarization pipeline for Civic City Hub.
+LLM-powered summarization pipeline for OpenCouncil.
 
 Takes meeting minutes text or scanned document images and produces:
 - Plain-language summary of what happened at the meeting
@@ -9,9 +9,9 @@ Takes meeting minutes text or scanned document images and produces:
 - Per-item plain-language translations
 
 Supports two modes:
-1. Text-based summarization (DeepSeek) — for documents with extractable text
-2. OCR-based summarization (Tesseract + DeepSeek) — for scanned document images (TIFF)
-   This is completely free and open-source, no API keys needed beyond DeepSeek.
+1. Text-based summarization (Groq / Llama 8B) — for documents with extractable text
+2. OCR-based summarization (Tesseract + Groq) — for scanned document images (TIFF)
+   OCR is completely free and open-source; Groq provides 14,400 req/day free tier.
 """
 
 import io
@@ -197,7 +197,8 @@ class LLMSummarizer:
        Supports English + French natively.
     2. Tesseract OCR mode (fallback): For scanned document images (TIFF) from Laserfiche.
        Free, open-source, used when EasyOCR is not available.
-    3. Text mode (DeepSeek): For documents with extractable text content.
+    3. Text mode (Groq / Llama 8B): For documents with extractable text content.
+       Uses Groq API (OpenAI-compatible) — 14,400 free requests/day on Llama 8B.
 
     Falls back to text mode if no page images are available.
     """
@@ -225,24 +226,24 @@ class LLMSummarizer:
 
     def __init__(
         self,
-        deepseek_key: Optional[str] = None,
-        text_model: str = "deepseek-chat",
+        grok_key: Optional[str] = None,
+        text_model: str = "llama-3.1-8b-instant",
     ):
-        self.deepseek_key = deepseek_key or os.getenv("DEEPSEEK_API_KEY")
+        self.grok_key = grok_key or os.getenv("GROK_API_KEY")
         self.text_model = text_model
 
-        # Initialize DeepSeek client (text mode)
-        if self.deepseek_key:
+        # Initialize Groq client via OpenAI-compatible SDK
+        if self.grok_key:
             self.deepseek_client = OpenAI(
-                api_key=self.deepseek_key,
-                base_url="https://api.deepseek.com",
+                api_key=self.grok_key,
+                base_url="https://api.groq.com/openai/v1",
             )
         else:
             self.deepseek_client = None
 
-        if not self.deepseek_key:
+        if not self.grok_key:
             raise ValueError(
-                "DEEPSEEK_API_KEY is required. "
+                "GROK_API_KEY is required. "
                 "Set it as an environment variable or pass to the constructor."
             )
 
@@ -980,7 +981,7 @@ class LLMSummarizer:
                 "confidence. If most of the text is unreadable, state that clearly in the summary."
             )
 
-        # Now summarize with DeepSeek — temperature 0.0 for maximum determinism
+        # Now summarize with Groq (Llama 8B) — temperature 0.0 for maximum determinism
         user_content = (
             f"Please summarize the following city council meeting minutes "
             f"for {minutes.city}, {minutes.state} on "
@@ -991,7 +992,8 @@ class LLMSummarizer:
             f"using OCR. Some errors may be present."
             f"{quality_warning}\n\n"
             f"Extracted Text:\n{text_for_llm}\n\n"
-            f"Return ONLY valid JSON matching the specified structure."
+            f"Return ONLY valid JSON matching the specified structure. "
+            f"Do not include any text outside the JSON object."
         )
 
         response = self.deepseek_client.chat.completions.create(
@@ -1002,7 +1004,6 @@ class LLMSummarizer:
             ],
             temperature=0.0,
             max_tokens=2000,
-            response_format={"type": "json_object"},
         )
 
         result = json.loads(response.choices[0].message.content)
@@ -1037,7 +1038,7 @@ class LLMSummarizer:
     async def _summarize_with_text(
         self, minutes: Minutes
     ) -> SummaryResponse:
-        """Summarize minutes using DeepSeek text model."""
+        """Summarize minutes using Groq (Llama 8B) text model."""
         minutes_text = self._prepare_minutes_text(minutes)
 
         # Detect garbled text quality
@@ -1086,7 +1087,8 @@ class LLMSummarizer:
             f"Title: {minutes.title}\n\n"
             f"Minutes Text:\n{minutes_text}\n"
             f"{quality_warning}\n\n"
-            f"Return ONLY valid JSON matching the specified structure."
+            f"Return ONLY valid JSON matching the specified structure. "
+            f"Do not include any text outside the JSON object."
         )
 
         response = self.deepseek_client.chat.completions.create(
@@ -1097,7 +1099,6 @@ class LLMSummarizer:
             ],
             temperature=0.0,
             max_tokens=2000,
-            response_format={"type": "json_object"},
         )
 
         result = json.loads(response.choices[0].message.content)

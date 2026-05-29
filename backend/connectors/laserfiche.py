@@ -1,5 +1,5 @@
 """
-Laserfiche WebLink connector for Civic City Hub.
+Laserfiche WebLink connector for OpenCouncil.
 
 Paris, TX stores city council minutes in Laserfiche WebLink at
 https://documents.paristexas.gov/weblink/. The system provides RSS feeds

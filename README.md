@@ -1,5 +1,5 @@
 ---
-title: Civic City Hub Backend
+title: CivillySimplified Backend
 emoji: 🏛️
 colorFrom: blue
 colorTo: indigo
@@ -8,7 +8,7 @@ pinned: false
 app_port: 7860
 ---
 
-# Civic City Hub
+# CivillySimplified
 
 A platform that fetches, summarizes, and displays city council agendas.
 

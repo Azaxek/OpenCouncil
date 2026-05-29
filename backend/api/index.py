@@ -1,5 +1,5 @@
 """
-Vercel serverless entry point for Civic City Hub backend.
+Vercel serverless entry point for OpenCouncil backend.
 
 Vercel Python serverless functions use WSGI. FastAPI is ASGI, so we use
 Mangum — an ASGI-to-WSGI adapter — to bridge the gap.

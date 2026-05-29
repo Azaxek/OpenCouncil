@@ -1,13 +1,13 @@
 """
-API key encryption utilities for Civic City Hub.
+API key encryption utilities for OpenCouncil.
 
-Provides Fernet-based symmetric encryption for the DeepSeek API key
+Provides Fernet-based symmetric encryption for the Groq API key
 so it can be stored encrypted in the database or config files.
 
 For Vercel/GitHub deployment:
 1. Generate an encryption key once: python -c "from crypto_utils import generate_key; print(generate_key())"
 2. Set ENCRYPTION_KEY as a Vercel environment variable
-3. Set DEEPSEEK_API_KEY (encrypted) as a Vercel environment variable
+3. Set GROK_API_KEY (encrypted) as a Vercel environment variable
 4. The app decrypts at runtime using the ENCRYPTION_KEY
 
 This means even if someone gets access to your DB or .env,
@@ -93,22 +93,22 @@ def decrypt_api_key(encrypted_key: str, encryption_key: Optional[str] = None) ->
 
 
 def get_api_key_from_env() -> Optional[str]:
-    """Get the DeepSeek API key, supporting both plaintext and encrypted modes.
+    """Get the Groq API key, supporting both plaintext and encrypted modes.
     
     Resolution order:
-    1. DEEPSEEK_API_KEY (plaintext) — for local dev
-    2. ENCRYPTED_DEEPSEEK_KEY + ENCRYPTION_KEY — for production/GitHub-safe deploy
+    1. GROK_API_KEY (plaintext) — for local dev
+    2. ENCRYPTED_GROK_KEY + ENCRYPTION_KEY — for production/GitHub-safe deploy
     
     Returns:
         The decrypted API key, or None if not configured.
     """
     # First try plaintext (local dev)
-    plain_key = os.getenv("DEEPSEEK_API_KEY")
+    plain_key = os.getenv("GROK_API_KEY")
     if plain_key:
         return plain_key
     
     # Then try encrypted (production/GitHub-safe)
-    encrypted_key = os.getenv("ENCRYPTED_DEEPSEEK_KEY")
+    encrypted_key = os.getenv("ENCRYPTED_GROK_KEY")
     encryption_key = os.getenv("ENCRYPTION_KEY")
     
     if encrypted_key and encryption_key:

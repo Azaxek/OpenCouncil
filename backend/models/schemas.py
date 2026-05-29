@@ -1,4 +1,4 @@
-"""Core data models for Civic City Hub."""
+"""Core data models for OpenCouncil."""
 
 from datetime import datetime, timezone
 from typing import Optional
@@ -54,3 +54,54 @@ class SummaryResponse(BaseModel):
     public_comment_opportunities: list[dict] = Field(default_factory=list)
     items: list[dict] = Field(default_factory=list)
     what_you_can_do: list[dict] = Field(default_factory=list)
+
+
+# --- New Models for Phases 1-4 ---
+
+
+class Volunteer(BaseModel):
+    """A volunteer who verifies summaries."""
+    user_id: str
+    email: str
+    full_name: str
+    school: Optional[str] = None
+    hours_earned: float = 0.00
+    is_active: bool = True
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+
+class Summary(BaseModel):
+    """A plain-language summary stored in the new summaries table."""
+    id: str = ""
+    minutes_id: str
+    summary: str
+    key_decisions: list[dict] = Field(default_factory=list)
+    budget_items: list[dict] = Field(default_factory=list)
+    public_comment_opportunities: list[dict] = Field(default_factory=list)
+    items: list[dict] = Field(default_factory=list)
+    big_picture: Optional[str] = None
+    what_you_can_do: list[dict] = Field(default_factory=list)
+    category: Optional[str] = None
+    neighborhood_impact: Optional[str] = None
+    status: str = "pending"
+    verified_by: Optional[str] = None
+    verified_at: Optional[datetime] = None
+    rejection_reason: Optional[str] = None
+    social_posted: bool = False
+    image_url: Optional[str] = None
+    model_used: Optional[str] = None
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+
+class VerificationSession(BaseModel):
+    """A verification session tracking volunteer review of a summary."""
+    id: str = ""
+    volunteer_id: str
+    summary_id: str
+    started_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    ended_at: Optional[datetime] = None
+    duration_seconds: Optional[int] = None
+    action: Optional[str] = None
+    notes: Optional[str] = None

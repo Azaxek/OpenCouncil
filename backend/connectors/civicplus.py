@@ -1,5 +1,5 @@
 """
-CivicPlus connector for Civic City Hub.
+CivicPlus connector for OpenCouncil.
 
 NOTE: This connector is currently unused. The app uses the Laserfiche connector
 directly for Paris, TX. This file is kept for future use when adding cities
@@ -31,7 +31,7 @@ class CivicPlusConnector:
             timeout=30.0,
             follow_redirects=True,
             headers={
-                "User-Agent": "CivicCityHub/1.0 (civic research project; contact@civiccityhub.org)",
+                "User-Agent": "OpenCouncil/1.0 (civic research project; contact@opencouncil.org)",
             },
         )
 

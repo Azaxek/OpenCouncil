@@ -14,11 +14,11 @@ const jetbrainsMono = JetBrains_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Civic City Hub — Local Government, Explained",
+  title: "OpenCouncil — Local Government, Explained",
   description:
     "Making local government understandable. Plain-language summaries of city council minutes, budgets, and decisions for cities across America.",
   openGraph: {
-    title: "Civic City Hub",
+    title: "OpenCouncil",
     description: "Plain-language summaries of city council minutes, budgets, and decisions.",
     type: "website",
   },
@@ -46,7 +46,7 @@ export default function RootLayout({
         >
           <div className="mx-auto px-4" style={{ maxWidth: "var(--max-width)" }}>
             <p className="font-semibold" style={{ fontFamily: "var(--font-serif)" }}>
-              Civic City Hub
+              OpenCouncil
             </p>
             <p className="mt-1">
               Making local government understandable for everyone.
@@ -55,6 +55,21 @@ export default function RootLayout({
               Data sourced from publicly available city council minutes.
               Not affiliated with any government entity.
             </p>
+            <div className="discrete-links mt-2">
+              <a href="/about" className="text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 text-sm mr-3">
+                About
+              </a>
+              <a href="/contact" className="text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 text-sm mr-3">
+                Contact
+              </a>
+              <a
+                href="/login"
+                className="text-gray-400 hover:text-gray-600 dark:hover:text-gray-300"
+                style={{ opacity: 0.3, fontSize: "0.7rem" }}
+              >
+                Volunteer Portal
+              </a>
+            </div>
           </div>
         </footer>
       </body>

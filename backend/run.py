@@ -1,5 +1,5 @@
 """
-Run the Civic City Hub API server.
+Run the OpenCouncil API server.
 
 Usage:
     python run.py              # Start server on default port 8000
@@ -18,8 +18,8 @@ if __name__ == "__main__":
     port = int(sys.argv[sys.argv.index("--port") + 1]) if "--port" in sys.argv else 8000
 
     providers = []
-    if os.getenv("DEEPSEEK_API_KEY"):
-        providers.append("DeepSeek (text + OCR)")
+    if os.getenv("GROK_API_KEY"):
+        providers.append("Groq / Llama 8B (text + OCR)")
     llm_status = ", ".join(providers) if providers else "Not configured"
 
     ocr_engines = []
@@ -47,7 +47,7 @@ if __name__ == "__main__":
     ocr_status = ", ".join(ocr_engines) if ocr_engines else "Not installed"
 
     print("=" * 60)
-    print("  Civic City Hub API Server")
+    print("  OpenCouncil API Server")
     print("=" * 60)
     print(f"  Port:     {port}")
     print(f"  City:     Paris, TX")

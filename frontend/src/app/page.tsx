@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useCallback, useEffect, useState } from "react";
+import { useEffect, useState } from "react";
 
 interface HealthResponse {
   status: string;
@@ -30,12 +30,6 @@ interface CityInfo {
   full_name?: string;
 }
 
-interface DetectCityResponse {
-  client_ip: string;
-  city: CityInfo;
-  all_cities: CityInfo[];
-}
-
 // API base URL — always empty string.
 // Local dev: Next.js rewrites in next.config.ts proxy /api/* to localhost:8000
 // Vercel: vercel.json routes /api/* to the Python serverless function
@@ -49,18 +43,9 @@ export default function HomePage() {
 
   useEffect(() => {
     Promise.all([
-      // Health check
-      fetch(`${API_BASE}/health`)
-        .then((res) => res.json())
-        .catch(() => null),
-      // City detection
-      fetch(`${API_BASE}/api/detect-city`)
-        .then((res) => res.json())
-        .catch(() => null),
-      // Recent minutes
-      fetch(`${API_BASE}/api/minutes?limit=5`)
-        .then((res) => res.json())
-        .catch(() => ({ minutes: [] })),
+      fetch(`${API_BASE}/health`).then((res) => res.json()).catch(() => null),
+      fetch(`${API_BASE}/api/detect-city`).then((res) => res.json()).catch(() => null),
+      fetch(`${API_BASE}/api/minutes?limit=5`).then((res) => res.json()).catch(() => ({ minutes: [] })),
     ])
       .then(([healthData, cityData, minutesData]) => {
         setHealth(healthData);
@@ -75,13 +60,9 @@ export default function HomePage() {
     if (!dateStr) return "";
     try {
       return new Date(dateStr).toLocaleDateString("en-US", {
-        month: "long",
-        day: "numeric",
-        year: "numeric",
+        month: "long", day: "numeric", year: "numeric",
       });
-    } catch {
-      return dateStr;
-    }
+    } catch { return dateStr; }
   };
 
   const cityName = cityInfo?.full_name || (cityInfo ? `${cityInfo.name}, ${cityInfo.state}` : "Paris, Texas");
@@ -90,9 +71,6 @@ export default function HomePage() {
 
   return (
     <div className="space-y-8">
-      {/* ================================================================ */}
-      {/* TOP STORY — Featured Minutes                                      */}
-      {/* ================================================================ */}
       <section>
         {loading ? (
           <div className="space-y-4">
@@ -101,20 +79,13 @@ export default function HomePage() {
           </div>
         ) : latestMinutes ? (
           <Link href={`/minutes/${latestMinutes.id}`} style={{ textDecoration: "none" }}>
-            <article
-              className="article-card article-card-featured"
-              style={{ padding: "2rem" }}
-            >
+            <article className="article-card article-card-featured" style={{ padding: "2rem" }}>
               <div style={{ display: "flex", flexDirection: "column", gap: "1rem" }}>
                 <div style={{ display: "flex", alignItems: "center", gap: "0.75rem" }}>
                   <span className="news-section-tag">Featured Minutes</span>
-                  {latestMinutes.has_summary && (
-                    <span className="badge badge-brand">AI Summary Available</span>
-                  )}
+                  {latestMinutes.has_summary && <span className="badge badge-brand">AI Summary Available</span>}
                 </div>
-                <h2 className="news-headline-xl">
-                  {latestMinutes.title}
-                </h2>
+                <h2 className="news-headline-xl">{latestMinutes.title}</h2>
                 <div className="news-byline">
                   {cityName} — {formatDate(latestMinutes.meeting_date)}
                   {latestMinutes.meeting_type && ` — ${latestMinutes.meeting_type}`}
@@ -124,22 +95,13 @@ export default function HomePage() {
                     ? "An AI-powered plain-language summary is available for these minutes. Read the key decisions, budget items, and public comment opportunities."
                     : "View the full meeting minutes with AI-powered plain-language summaries."}
                 </p>
-                <div>
-                  <span className="btn btn-primary">
-                    Read Full Coverage →
-                  </span>
-                </div>
+                <div><span className="btn btn-primary">Read Full Coverage →</span></div>
               </div>
             </article>
           </Link>
         ) : (
-          <article
-            className="article-card"
-            style={{ padding: "2rem", textAlign: "center" }}
-          >
-            <h2 className="news-headline-lg" style={{ marginBottom: "0.75rem" }}>
-              Welcome to Civic City Hub
-            </h2>
+          <article className="article-card" style={{ padding: "2rem", textAlign: "center" }}>
+            <h2 className="news-headline-lg" style={{ marginBottom: "0.75rem" }}>Welcome to OpenCouncil</h2>
             <p className="news-body">
               We're currently fetching the latest minutes from {cityName}.
               Check back soon for plain-language summaries of city council meetings.
@@ -148,57 +110,28 @@ export default function HomePage() {
         )}
       </section>
 
-      {/* ================================================================ */}
-      {/* NEWS GRID — More Minutes + Sidebar                                */}
-      {/* ================================================================ */}
       <div className="news-layout">
-        {/* Main content */}
         <div className="space-y-6">
-          {/* Section header */}
-          <div className="section-header">
-            <span className="news-section-tag">Latest Minutes</span>
-          </div>
-
-          {/* Minutes cards */}
+          <div className="section-header"><span className="news-section-tag">Latest Minutes</span></div>
           {loading ? (
             <div className="space-y-4">
-              {[1, 2, 3].map((i) => (
-                <div key={i} className="skeleton h-24 w-full" />
-              ))}
+              {[1, 2, 3].map((i) => <div key={i} className="skeleton h-24 w-full" />)}
             </div>
           ) : otherMinutes.length > 0 ? (
             <div className="space-y-4">
               {otherMinutes.map((minutes) => (
-                <Link
-                  key={minutes.id}
-                  href={`/minutes/${minutes.id}`}
-                  style={{ textDecoration: "none" }}
-                >
+                <Link key={minutes.id} href={`/minutes/${minutes.id}`} style={{ textDecoration: "none" }}>
                   <article className="article-card" style={{ padding: "1.25rem" }}>
-                    <div
-                      style={{
-                        display: "flex",
-                        justifyContent: "space-between",
-                        alignItems: "flex-start",
-                        gap: "1rem",
-                      }}
-                    >
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: "1rem" }}>
                       <div style={{ flex: 1, minWidth: 0 }}>
-                        <h3 className="news-headline-md" style={{ marginBottom: "0.25rem" }}>
-                          {minutes.title}
-                        </h3>
+                        <h3 className="news-headline-md" style={{ marginBottom: "0.25rem" }}>{minutes.title}</h3>
                         <p className="news-byline">
-                          {formatDate(minutes.meeting_date)}
-                          {minutes.meeting_type && ` — ${minutes.meeting_type}`}
+                          {formatDate(minutes.meeting_date)}{minutes.meeting_type && ` — ${minutes.meeting_type}`}
                         </p>
                       </div>
                       <div style={{ display: "flex", alignItems: "center", gap: "0.5rem", flexShrink: 0 }}>
-                        {minutes.has_summary && (
-                          <span className="badge badge-brand">AI</span>
-                        )}
-                        <span style={{ color: "var(--foreground-secondary)", fontSize: "0.875rem" }}>
-                          →
-                        </span>
+                        {minutes.has_summary && <span className="badge badge-brand">AI</span>}
+                        <span style={{ color: "var(--foreground-secondary)", fontSize: "0.875rem" }}>→</span>
                       </div>
                     </div>
                   </article>
@@ -207,39 +140,23 @@ export default function HomePage() {
             </div>
           ) : (
             <div className="article-card" style={{ padding: "2rem", textAlign: "center" }}>
-              <p className="news-body" style={{ marginBottom: "1rem" }}>
-                No minutes available yet.
-              </p>
-              <Link href="/minutes" className="btn btn-primary">
-                Browse Minutes
-              </Link>
+              <p className="news-body" style={{ marginBottom: "1rem" }}>No minutes available yet.</p>
+              <Link href="/minutes" className="btn btn-primary">Browse Minutes</Link>
             </div>
           )}
-
-          {/* View all link */}
           {minutesList.length > 0 && (
             <div style={{ textAlign: "center" }}>
-              <Link href="/minutes" className="btn btn-secondary">
-                View All Minutes →
-              </Link>
+              <Link href="/minutes" className="btn btn-secondary">View All Minutes →</Link>
             </div>
           )}
         </div>
 
-        {/* ================================================================ */}
-        {/* SIDEBAR                                                          */}
-        {/* ================================================================ */}
         <aside className="space-y-6">
-          {/* City Info */}
           <div className="sidebar-card">
             <h3>Your City</h3>
-            <p className="news-headline-md" style={{ marginBottom: "0.25rem" }}>
-              {cityName}
-            </p>
+            <p className="news-headline-md" style={{ marginBottom: "0.25rem" }}>{cityName}</p>
             <p className="news-byline" style={{ textTransform: "none", letterSpacing: "normal" }}>
-              {health
-                ? `API: ${health.status === "ok" ? "Connected" : "Offline"}`
-                : "Connecting..."}
+              {health ? `API: ${health.status === "ok" ? "Connected" : "Offline"}` : "Connecting..."}
             </p>
             {health && (
               <div style={{ marginTop: "0.75rem", display: "flex", flexDirection: "column", gap: "0.375rem" }}>
@@ -261,7 +178,6 @@ export default function HomePage() {
             )}
           </div>
 
-          {/* How It Works */}
           <div className="sidebar-card">
             <h3>How It Works</h3>
             <div style={{ display: "flex", flexDirection: "column", gap: "0.75rem" }}>
@@ -272,21 +188,13 @@ export default function HomePage() {
                 { step: "4", text: "You stay informed about your local government" },
               ].map((item) => (
                 <div key={item.step} style={{ display: "flex", gap: "0.625rem", alignItems: "flex-start" }}>
-                  <span
-                    className="badge badge-brand"
-                    style={{ minWidth: "1.5rem", textAlign: "center" }}
-                  >
-                    {item.step}
-                  </span>
-                  <span style={{ fontSize: "0.8125rem", color: "var(--foreground-secondary)" }}>
-                    {item.text}
-                  </span>
+                  <span className="badge badge-brand" style={{ minWidth: "1.5rem", textAlign: "center" }}>{item.step}</span>
+                  <span style={{ fontSize: "0.8125rem", color: "var(--foreground-secondary)" }}>{item.text}</span>
                 </div>
               ))}
             </div>
           </div>
 
-          {/* Stats */}
           <div className="sidebar-card">
             <h3>Coverage</h3>
             <div style={{ display: "flex", flexDirection: "column", gap: "0.5rem" }}>
@@ -309,14 +217,9 @@ export default function HomePage() {
         </aside>
       </div>
 
-      {/* ================================================================ */}
-      {/* ABOUT SECTION                                                     */}
-      {/* ================================================================ */}
       <hr className="news-divider-thick" />
       <section style={{ textAlign: "center", maxWidth: "600px", margin: "0 auto", padding: "2rem 0" }}>
-        <h2 className="news-headline-lg" style={{ marginBottom: "1rem" }}>
-          About Civic City Hub
-        </h2>
+        <h2 className="news-headline-lg" style={{ marginBottom: "1rem" }}>About OpenCouncil</h2>
         <p className="news-body" style={{ marginBottom: "1rem" }}>
           City council minutes are full of jargon and legalese. We use AI to translate them
           into plain English so you know what's happening in your city — and when to speak up.

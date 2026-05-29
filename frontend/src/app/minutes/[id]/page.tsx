@@ -69,7 +69,6 @@ export default function MinutesDetailPage({
 
   useEffect(() => {
     let cancelled = false;
-    setLoading(true);
     fetch(`${API_BASE}/api/minutes/${id}`)
       .then((res) => {
         if (res.status === 404) {
@@ -292,7 +291,7 @@ export default function MinutesDetailPage({
               AI-Powered Summary
             </h2>
             <p className="news-byline" style={{ textTransform: "none", letterSpacing: "normal", marginTop: "0.25rem" }}>
-              Plain-language explanation powered by DeepSeek AI
+              Plain-language explanation powered by Groq AI (Llama 8B)
             </p>
           </div>
           {!summary && (

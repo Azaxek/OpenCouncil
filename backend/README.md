@@ -1,5 +1,5 @@
 ---
-title: Civic City Hub Backend
+title: OpenCouncil Backend
 emoji: 🏛️
 colorFrom: blue
 colorTo: indigo
@@ -8,9 +8,9 @@ pinned: false
 app_port: 7860
 ---
 
-# Civic City Hub Backend
+# OpenCouncil Backend
 
-FastAPI backend for Civic City Hub — a platform that fetches, summarizes, and displays city council agendas.
+FastAPI backend for OpenCouncil — a platform that fetches, summarizes, and displays city council agendas.
 
 ## Environment Variables
 
