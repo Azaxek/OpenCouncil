@@ -310,8 +310,61 @@ class LLMSummarizer:
                 return await self._summarize_with_text(minutes)
             raise RuntimeError("No image data and no text fallback.")
 
-        # FREE OCR.space API — works everywhere including Vercel Lambda
-        print("[OCR] Using free OCR.space API (no API key required, 25k req/month)")
+        # Try free Groq Vision API (Llama 3.2 11B Vision) to read text from images.
+        # No JSON mode needed — just raw text extraction. Then text model summarizes.
+        import base64
+        print("[OCR] Using Groq Vision API to read text from images...")
+        vision_text = ""
+        try:
+            max_pages = min(len(image_bytes_list), 3)
+            content = [{"type": "text", "text": "Extract ALL readable text from these scanned city council meeting pages. Transcribe everything exactly as you see it. Preserve the layout."}]
+            for i in range(max_pages):
+                img_b64 = base64.b64encode(image_bytes_list[i]).decode("utf-8")
+                mime = "image/png" if image_bytes_list[i][:4] == b'\x89PNG' else "image/jpeg"
+                content.append({"type": "image_url", "image_url": {"url": f"data:{mime};base64,{img_b64}"}})
+            vr = self.deepseek_client.chat.completions.create(
+                model="llama-3.2-11b-vision-preview",
+                messages=[{"role": "user", "content": content}],
+                temperature=0.0, max_tokens=4096,
+            )
+            vision_text = vr.choices[0].message.content or ""
+            print(f"[VISION] Extracted {len(vision_text)} chars from {max_pages} pages")
+            print(f"[VISION] First 200 chars: {vision_text[:200]}")
+        except Exception as e:
+            print(f"[VISION] Failed: {e}")
+
+        if vision_text and len(vision_text.strip()) > 50:
+            minutes.raw_text = vision_text.strip()
+            user_content = (
+                f"Please summarize the following city council meeting minutes "
+                f"for {minutes.city}, {minutes.state} on "
+                f"{minutes.meeting_date.strftime('%B %d, %Y')}.\n\n"
+                f"Meeting Type: {minutes.meeting_type}\n"
+                f"Title: {minutes.title}\n\n"
+                f"The following text was extracted from scanned document images by an AI vision model:\n\n"
+                f"{vision_text.strip()[:self.MAX_OCR_TEXT_CHARS]}\n\n"
+                f"Return ONLY valid JSON matching the specified structure. "
+                f"Do not include any text outside the JSON object."
+            )
+            response = self.deepseek_client.chat.completions.create(
+                model=self.text_model,
+                messages=[{"role": "system", "content": MINUTES_SYSTEM_PROMPT}, {"role": "user", "content": user_content}],
+                temperature=0.0, max_tokens=4096, response_format={"type": "json_object"},
+            )
+            result = json.loads(response.choices[0].message.content)
+            return SummaryResponse(
+                minutes_id=minutes.id, meeting_date=minutes.meeting_date, meeting_type=minutes.meeting_type,
+                big_picture=result.get("big_picture", ""),
+                summary=result.get("summary", "No summary available."),
+                key_decisions=[d if isinstance(d, dict) else {"description": d} for d in result.get("key_decisions", [])],
+                budget_items=[d if isinstance(d, dict) else {"description": d} for d in result.get("budget_items", [])],
+                public_comment_opportunities=[d if isinstance(d, dict) else {"description": d} for d in result.get("public_comment_opportunities", [])],
+                items=[d if isinstance(d, dict) else {"description": d} for d in result.get("items", [])],
+                what_you_can_do=[d if isinstance(d, dict) else {"description": d} for d in result.get("what_you_can_do", [])],
+            )
+
+        # Fallback: OCR.space
+        print("[OCR] Vision failed, trying free OCR.space API")
         ocr_parts = []
         for i, img_bytes in enumerate(image_bytes_list[:5]):
             page_text = await self._ocr_with_ocrspace(img_bytes)
