@@ -612,67 +612,82 @@ async def list_minutes(
 @app.get("/api/minutes/{minutes_id}")
 async def get_minutes_endpoint(minutes_id: str):
     """Get a specific minutes document with full details and its summary if available."""
+    # First check DB (fast path — no network calls)
     minutes = get_minutes(minutes_id)
     if minutes:
         summary = get_minutes_summary(minutes_id)
         return {"minutes": minutes, "summary": summary}
 
-    # Try all connectors to find it
+    # Not in DB — try to find from connector list (with aggressive timeouts)
+    # Use asyncio.wait_for to prevent Vercel 10s timeout
+    import asyncio
+
     for city_key, conn in connectors.items():
-        if hasattr(conn, 'get_latest_minutes'):
-            try:
-                latest = await conn.get_latest_minutes()
-                if latest and latest.id == minutes_id:
-                    save_minutes(latest)
-                    if summarizer and not minutes_summary_exists(minutes_id):
-                        await _auto_summarize_minutes(latest)
-                    return {
-                        "minutes": latest,
-                        "summary": get_minutes_summary(minutes_id),
-                    }
-            except Exception:
-                continue
+        if not hasattr(conn, 'fetch_minutes_list'):
+            continue
 
-        # Try to search in the minutes list
-        if hasattr(conn, 'fetch_minutes_list'):
-            try:
-                minutes_list = await conn.fetch_minutes_list(limit=50)
-                for m in minutes_list:
-                    if m["id"] == minutes_id:
-                        doc_url = m.get("document_url")
-                        raw_text = None
-                        page_image_urls: list[str] = []
-                        if doc_url and hasattr(conn, 'fetch_document_text'):
-                            raw_text = await conn.fetch_document_text(doc_url)
-                            if raw_text:
-                                for line in raw_text.split("\n"):
-                                    match = re.search(r'\[Page \d+: (.+)\]', line)
-                                    if match:
-                                        page_image_urls.append(match.group(1))
-                            if not page_image_urls and hasattr(conn, 'fetch_page_image_urls'):
-                                page_image_urls = await conn.fetch_page_image_urls(doc_url)
+        try:
+            minutes_list = await asyncio.wait_for(
+                conn.fetch_minutes_list(limit=30),
+                timeout=8.0,
+            )
+            for m in minutes_list:
+                if m["id"] != minutes_id:
+                    continue
 
-                        city_name = m.get("city", city_key.split("-")[0].title())
-                        minutes = Minutes(
-                            id=m["id"],
-                            city=city_name,
-                            state=m.get("state", "TX"),
-                            meeting_date=m.get("meeting_date") or datetime.now(timezone.utc),
-                            title=m["title"],
-                            url=m.get("url") or "",
-                            document_url=doc_url,
-                            raw_text=raw_text,
-                            page_image_urls=page_image_urls,
+                doc_url = m.get("document_url")
+                raw_text = None
+                page_image_urls: list[str] = []
+
+                # Try to fetch document text (with short timeout)
+                if doc_url and hasattr(conn, 'fetch_document_text'):
+                    try:
+                        raw_text = await asyncio.wait_for(
+                            conn.fetch_document_text(doc_url),
+                            timeout=5.0,
                         )
-                        save_minutes(minutes)
-                        if summarizer and not minutes_summary_exists(minutes_id):
-                            await _auto_summarize_minutes(minutes)
-                        return {
-                            "minutes": minutes,
-                            "summary": get_minutes_summary(minutes_id),
-                        }
-            except Exception:
-                continue
+                        if raw_text:
+                            for line in raw_text.split("\n"):
+                                match = re.search(r'\[Page \d+: (.+)\]', line)
+                                if match:
+                                    page_image_urls.append(match.group(1))
+                        if not page_image_urls and hasattr(conn, 'fetch_page_image_urls'):
+                            page_image_urls = await asyncio.wait_for(
+                                conn.fetch_page_image_urls(doc_url),
+                                timeout=5.0,
+                            )
+                    except (asyncio.TimeoutError, Exception):
+                        print(f"[WARN] Timeout fetching document text for {minutes_id}")
+
+                city_name = m.get("city", city_key.split("-")[0].title())
+                minutes_obj = Minutes(
+                    id=m["id"],
+                    city=city_name,
+                    state=m.get("state", "TX"),
+                    meeting_date=m.get("meeting_date") or datetime.now(timezone.utc),
+                    title=m["title"],
+                    url=m.get("url") or "",
+                    document_url=doc_url,
+                    raw_text=raw_text or f"Document URL: {doc_url}",
+                    page_image_urls=page_image_urls,
+                )
+                save_minutes(minutes_obj)
+                return {
+                    "minutes": minutes_obj,
+                    "summary": get_minutes_summary(minutes_id),
+                }
+        except (asyncio.TimeoutError, Exception):
+            print(f"[WARN] Timeout or error fetching minutes list from {city_key}")
+            continue
+
+    # Last resort: return minimal info from the DB list_minutes result
+    db_list = db_list_minutes(limit=50)
+    for m in db_list:
+        if m["id"] == minutes_id:
+            return {
+                "minutes": m,
+                "summary": get_minutes_summary(minutes_id),
+            }
 
     raise HTTPException(status_code=404, detail=f"Minutes {minutes_id} not found")
 
@@ -750,6 +765,8 @@ async def summarize_minutes_endpoint(request: SummaryRequest):
             raise HTTPException(status_code=502, detail=f"Failed to fetch minutes: {str(e)}")
 
     try:
+        import asyncio
+
         image_fetcher = None
         has_urls = (
             minutes.page_image_urls
@@ -764,17 +781,28 @@ async def summarize_minutes_endpoint(request: SummaryRequest):
                 if hasattr(conn, 'fetch_page_images'):
                     _fetch_conn = conn
                     async def _image_fetcher():
-                        return await _fetch_conn.fetch_page_images(_doc_url, page_urls=_page_urls)
+                        try:
+                            return await asyncio.wait_for(
+                                _fetch_conn.fetch_page_images(_doc_url, page_urls=_page_urls),
+                                timeout=15.0,
+                            )
+                        except (asyncio.TimeoutError, Exception) as e:
+                            print(f"[WARN] Image fetch timed out for {minutes.id}: {e}")
+                            return []
                     image_fetcher = _image_fetcher
                     break
 
-        summary = await summarizer.summarize_minutes(
-            minutes,
-            image_fetcher=image_fetcher,
+        # Try to summarize (with overall timeout to prevent Vercel 502)
+        summary = await asyncio.wait_for(
+            summarizer.summarize_minutes(minutes, image_fetcher=image_fetcher),
+            timeout=25.0,
         )
         save_minutes_summary(minutes.id, summary)
         save_minutes(minutes)
         return summary
+    except asyncio.TimeoutError:
+        print(f"[WARN] Summarization timed out for minutes {minutes.id}")
+        raise HTTPException(status_code=502, detail="Summarization timed out. The document may be too large or the LLM API is slow.")
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"Summarization failed: {str(e)}")
 
