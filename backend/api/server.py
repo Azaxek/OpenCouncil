@@ -677,7 +677,7 @@ async def reset_minutes():
 
 
 @app.post("/api/minutes/fetch-latest")
-async def fetch_latest_minutes():
+async def fetch_latest_minutes(force: bool = Query(False, description="Force re-fetch and re-summarize even if cached")):
     """Fetch and store the latest minutes from all connected cities."""
     conn = _get_connector()
     if not conn:
@@ -688,6 +688,17 @@ async def fetch_latest_minutes():
             minutes = await conn.get_latest_minutes()
             if not minutes:
                 raise HTTPException(status_code=404, detail="No minutes found")
+
+            # If force=True, delete existing cached data first
+            if force:
+                print(f"[FETCH-LATEST] Force mode — clearing cached data for {minutes.id}")
+                from storage import _execute, USE_POSTGRES
+                if USE_POSTGRES:
+                    _execute("DELETE FROM minutes_summaries WHERE minutes_id = %s", (minutes.id,))
+                    _execute("DELETE FROM minutes WHERE id = %s", (minutes.id,))
+                else:
+                    _execute("DELETE FROM minutes_summaries WHERE minutes_id = ?", (minutes.id,))
+                    _execute("DELETE FROM minutes WHERE id = ?", (minutes.id,))
 
             save_minutes(minutes)
             if summarizer:
