@@ -780,6 +780,82 @@ class LLMSummarizer:
 
         raise RuntimeError("No LLM client available for summarization.")
 
+    async def _summarize_with_llm_vision(
+        self,
+        minutes: Minutes,
+        image_bytes_list: list[bytes],
+    ) -> SummaryResponse:
+        """Summarize minutes by sending page images directly to Groq's vision API.
+
+        On Vercel Lambda, local OCR engines (EasyOCR, Tesseract) are not available.
+        Groq's Llama 3.2 11B Vision model can read text from images directly,
+        bypassing the need for local OCR entirely.
+
+        Args:
+            minutes: The minutes document to summarize.
+            image_bytes_list: List of PNG/JPEG bytes for each page image.
+
+        Returns:
+            SummaryResponse with AI-generated summary.
+        """
+        import base64
+
+        # Build content with images (first 5 pages to stay within rate limits)
+        max_pages = min(len(image_bytes_list), 5)
+        content_parts = [
+            {
+                "type": "text",
+                "text": (
+                    f"Please summarize the following city council meeting minutes "
+                    f"for {minutes.city}, {minutes.state} on "
+                    f"{minutes.meeting_date.strftime('%B %d, %Y')}.\n\n"
+                    f"Meeting Type: {minutes.meeting_type}\n"
+                    f"Title: {minutes.title}\n\n"
+                    f"These are scanned document pages (images). "
+                    f"Read the text from each image and summarize the meeting.\n\n"
+                    f"Return ONLY valid JSON matching the specified structure. "
+                    f"Do not include any text outside the JSON object."
+                ),
+            }
+        ]
+
+        for i in range(max_pages):
+            img_b64 = base64.b64encode(image_bytes_list[i]).decode("utf-8")
+            # Determine MIME type from first bytes (PNG header or JPEG header)
+            if image_bytes_list[i][:4] == b'\x89PNG':
+                mime = "image/png"
+            else:
+                mime = "image/jpeg"
+            content_parts.append({
+                "type": "image_url",
+                "image_url": {"url": f"data:{mime};base64,{img_b64}"},
+            })
+
+        # Use Llama 3.2 11B Vision (supports image inputs)
+        response = self.deepseek_client.chat.completions.create(
+            model="llama-3.2-11b-vision-preview",
+            messages=[
+                {"role": "system", "content": MINUTES_SYSTEM_PROMPT},
+                {"role": "user", "content": content_parts},
+            ],
+            temperature=0.0,
+            max_tokens=8096,
+            response_format={"type": "json_object"},
+        )
+
+        raw = response.choices[0].message.content
+        try:
+            data = json.loads(raw)
+            data["minutes_id"] = minutes.id
+            data["meeting_date"] = minutes.meeting_date
+            data["meeting_type"] = minutes.meeting_type
+            return SummaryResponse(**data)
+        except (json.JSONDecodeError, TypeError) as e:
+            print(f"[VISION] Failed to parse LLM response: {e}")
+            return self._build_unreadable_response(
+                minutes, reason=f"vision-parse-failed"
+            )
+
     async def _summarize_with_ocr(
         self,
         minutes: Minutes,
@@ -788,13 +864,13 @@ class LLMSummarizer:
         """Summarize minutes using OCR on scanned document images.
 
         Priority:
-        1. EasyOCR (primary) — deep-learning based, MIT license, best accuracy.
-        2. Tesseract (fallback) — traditional OCR, used when EasyOCR unavailable.
+        1. Groq Vision API (server-side, no local OCR needed) — best for Vercel/Lambda
+        2. EasyOCR (primary local) — deep-learning based, MIT license, best accuracy.
+        3. Tesseract (fallback) — traditional OCR, used when EasyOCR unavailable.
 
-        Downloads each page image, runs OCR, detects garbled text,
-        then passes the extracted text to DeepSeek for summarization.
-
-        This is completely free and open-source — no paid API keys needed.
+        Downloads each page image, then either:
+        - Sends images directly to Groq Vision (preferred on serverless)
+        - Runs local OCR, then passes extracted text to LLM for summarization
         """
         # Determine if we have URLs or actual image data
         has_urls = (
@@ -832,8 +908,16 @@ class LLMSummarizer:
                 "OCR failed: no image data and no text fallback."
             )
 
-        # Run OCR on each page image
-        # Strategy: Try ALL available engines and take the BEST result per page
+        # On serverless (Vercel Lambda), local OCR engines aren't available.
+        # Use Groq Vision API directly — it reads text from images server-side.
+        if not self._easyocr_available and not self._pytesseract_available:
+            print("[VISION] No local OCR engines — using Groq Vision API")
+            try:
+                return await self._summarize_with_llm_vision(minutes, image_bytes_list)
+            except Exception as e:
+                print(f"[VISION] Groq Vision failed: {e}, trying local OCR fallback...")
+
+        # Run OCR on each page image (only runs if local OCR engines exist)
         extracted_pages = []
         total_raw_chars = 0
 
@@ -856,18 +940,12 @@ class LLMSummarizer:
                     except Exception as e:
                         print(f"[WARN] EasyOCR failed for page {i + 1}: {e}")
 
-                # --- Always try Tesseract too (it may extract different content) ---
+                # --- Try Tesseract too ---
                 if self._pytesseract_available:
                     try:
                         image = self._PIL_Image.open(io.BytesIO(img_bytes))
                         processed = self._preprocess_image_for_ocr(image, for_easyocr=False)
 
-                        # Strategy: Try MULTIPLE PSM modes and take the best result.
-                        # Different page layouts need different PSM modes:
-                        #   --psm 6  = Assume uniform block of text (best for standard docs)
-                        #   --psm 4  = Assume variable-size text (good for mixed content)
-                        #   --psm 3  = Fully automatic (Tesseract decides layout)
-                        #   --psm 1  = Automatic with OSD (orientation detection)
                         tess_psm_modes = [6, 4, 3, 1]
                         tess_results = []
 
@@ -883,25 +961,20 @@ class LLMSummarizer:
                             except Exception:
                                 continue
 
-                        # Also try raw (unprocessed) image with PSM 6 as baseline
                         try:
                             text_raw = self._pytesseract.image_to_string(
-                                image,
-                                lang=self.TESSERACT_LANGUAGES,
+                                image, lang=self.TESSERACT_LANGUAGES,
                                 config="--psm 6 --oem 3",
                             ).strip()
                             if text_raw:
-                                tess_results.append((text_raw, 0))  # 0 = raw
+                                tess_results.append((text_raw, 0))
                         except Exception:
                             pass
 
-                        # Pick the best Tesseract result: prefer longer text
-                        # that also has good alpha ratio (not just noise)
                         text_tess = ""
                         best_tess_psm = -1
                         for text_candidate, psm_mode in tess_results:
                             if len(text_candidate) > len(text_tess):
-                                # Check that the text isn't just noise
                                 alpha_count = sum(1 for c in text_candidate if c.isalpha())
                                 if alpha_count > 10 or len(text_candidate) > len(text_tess) * 2:
                                     text_tess = text_candidate
@@ -914,21 +987,16 @@ class LLMSummarizer:
                     except Exception as e:
                         print(f"[WARN] Tesseract failed for page {i + 1}: {e}")
 
-                # --- Use the best result ---
                 if best_text:
                     page_text = best_text
                     ocr_engine = best_engine
 
-                # --- Log results ---
                 if page_text and page_text.strip():
                     total_raw_chars += len(page_text.strip())
                     extracted_pages.append(
                         f"--- Page {i + 1} ({ocr_engine}) ---\n{page_text.strip()}"
                     )
-                    print(
-                        f"[OCR] Page {i + 1} ({ocr_engine}) preview: "
-                        f"{page_text.strip()[:300]}"
-                    )
+                    print(f"[OCR] Page {i + 1} ({ocr_engine}) preview: {page_text.strip()[:300]}")
                 else:
                     print(f"[OCR] Page {i + 1}: no text extracted by any OCR engine")
 
@@ -936,42 +1004,26 @@ class LLMSummarizer:
                 print(f"[WARN] OCR failed for page {i + 1}: {e}")
 
         if not extracted_pages:
-            print(
-                "[WARN] OCR produced no text, falling back to text mode"
-            )
+            print("[WARN] OCR produced no text, falling back to text mode")
             if self.deepseek_client:
                 return await self._summarize_with_text(minutes)
-            raise RuntimeError(
-                "OCR failed to extract text and no text fallback available."
-            )
+            raise RuntimeError("OCR failed to extract text and no text fallback available.")
 
         # Combine all extracted text
         full_text = "\n\n".join(extracted_pages)
-
-        # Detect garbled text quality
         is_garbled, quality_score = self._detect_garbled_text(full_text)
-        print(f"[OCR QUALITY] Overall text quality score: {quality_score:.2f} "
-              f"({'GARBLED' if is_garbled else 'OK'})")
+        print(f"[OCR QUALITY] Overall text quality score: {quality_score:.2f} {'GARBLED' if is_garbled else 'OK'}")
 
-        # Save OCR text to minutes.raw_text so it persists and can be inspected
         minutes.raw_text = full_text
         print(f"[OCR] Total extracted text: {len(full_text)} characters")
-        print(f"[OCR] Full extracted text:\n{full_text[:3000]}")
 
-        # PRE-LLM GUARD: If text quality is below UNREADABLE_THRESHOLD, skip LLM entirely.
-        # LLMs hallucinate when given sparse/garbled text — better to return empty response.
         if quality_score < self.UNREADABLE_THRESHOLD:
             return self._build_unreadable_response(
                 minutes, reason=f"OCR quality score too low ({quality_score:.2f})"
             )
 
-        # Truncate text to avoid exceeding LLM context limits
-        # Use the class constant for configurable limit
         text_for_llm = full_text[:self.MAX_OCR_TEXT_CHARS]
-        if len(full_text) > self.MAX_OCR_TEXT_CHARS:
-            print(f"[OCR] Truncated text from {len(full_text)} to {self.MAX_OCR_TEXT_CHARS} characters")
 
-        # Build quality warning for the LLM
         quality_warning = ""
         if is_garbled:
             quality_warning = (
@@ -981,7 +1033,6 @@ class LLMSummarizer:
                 "confidence. If most of the text is unreadable, state that clearly in the summary."
             )
 
-        # Now summarize with Groq (Llama 8B) — temperature 0.0 for maximum determinism
         user_content = (
             f"Please summarize the following city council meeting minutes "
             f"for {minutes.city}, {minutes.state} on "
