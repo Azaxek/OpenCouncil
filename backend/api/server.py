@@ -228,15 +228,19 @@ async def _detect_city_from_ip(request: Request) -> dict:
     }
 
 
-async def _auto_summarize_minutes(minutes: Minutes) -> Optional[SummaryResponse]:
+async def _auto_summarize_minutes(minutes: Minutes, force: bool = False) -> Optional[SummaryResponse]:
     """Auto-summarize minutes and save persistently."""
     global summarizer
     if not summarizer or not minutes:
         return None
 
-    if minutes_summary_exists(minutes.id):
+    exists = minutes_summary_exists(minutes.id)
+    if exists and not force:
         print(f"[AUTO] Summary already exists for minutes {minutes.id}, skipping.")
         return get_minutes_summary(minutes.id)
+
+    if force and exists:
+        print(f"[AUTO] Force mode — re-summarizing minutes {minutes.id}...")
 
     try:
         print(f"[AUTO] Summarizing minutes {minutes.id}...")
@@ -689,20 +693,9 @@ async def fetch_latest_minutes(force: bool = Query(False, description="Force re-
             if not minutes:
                 raise HTTPException(status_code=404, detail="No minutes found")
 
-            # If force=True, delete existing cached data first
-            if force:
-                print(f"[FETCH-LATEST] Force mode — clearing cached data for {minutes.id}")
-                from storage import _execute, USE_POSTGRES
-                if USE_POSTGRES:
-                    _execute("DELETE FROM minutes_summaries WHERE minutes_id = %s", (minutes.id,))
-                    _execute("DELETE FROM minutes WHERE id = %s", (minutes.id,))
-                else:
-                    _execute("DELETE FROM minutes_summaries WHERE minutes_id = ?", (minutes.id,))
-                    _execute("DELETE FROM minutes WHERE id = ?", (minutes.id,))
-
             save_minutes(minutes)
             if summarizer:
-                await _auto_summarize_minutes(minutes)
+                await _auto_summarize_minutes(minutes, force=force)
 
             return {
                 "minutes": minutes,
