@@ -175,6 +175,53 @@ class OnBaseConnector:
         """OnBase documents may have PDF downloads available."""
         return [document_url]
 
+    async def fetch_page_images(self, document_url: str, page_urls: Optional[list[str]] = None) -> list[bytes]:
+        """Download a PDF from OnBase and render its pages to PNG images for OCR processing.
+        
+        Uses PyMuPDF (fitz) if available to render PDF pages at 300 DPI.
+        Falls back to returning empty list if PyMuPDF is not installed.
+        """
+        urls = page_urls or [document_url]
+        images: list[bytes] = []
+        
+        for url in urls:
+            try:
+                response = await self.client.get(url)
+                response.raise_for_status()
+                pdf_bytes = response.content
+                
+                if pdf_bytes[:4] != b'%PDF':
+                    print(f"[OnBase] URL {url} is not a valid PDF")
+                    continue
+                
+                try:
+                    import fitz
+                    pdf_doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+                    zoom = 300 / 72
+                    mat = fitz.Matrix(zoom, zoom)
+                    
+                    for page_num in range(len(pdf_doc)):
+                        page = pdf_doc[page_num]
+                        pix = page.get_pixmap(matrix=mat)
+                        img_bytes = pix.tobytes("png")
+                        if img_bytes:
+                            images.append(img_bytes)
+                            print(f"[OnBase] Rendered page {page_num + 1}: {len(img_bytes)} bytes")
+                    
+                    pdf_doc.close()
+                    print(f"[OnBase] Total: {len(images)} pages from PDF")
+                except ImportError:
+                    print("[OnBase] PyMuPDF (fitz) not installed, cannot render PDF pages")
+                    return []
+                except Exception as e:
+                    print(f"[OnBase] PDF rendering failed: {e}")
+                    return []
+            except Exception as e:
+                print(f"[OnBase] Failed to download PDF from {url}: {e}")
+                continue
+        
+        return images
+
     async def get_latest_minutes(self) -> Optional[Minutes]:
         """Fetch the most recent meeting."""
         minutes_list = await self.fetch_minutes_list(limit=5)

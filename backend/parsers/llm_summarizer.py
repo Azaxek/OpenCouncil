@@ -243,7 +243,11 @@ class LLMSummarizer:
         )
 
     async def _call_groq(self, system_prompt, user_content, max_tokens=4096):
-        """Call Groq chat completions directly via httpx (async). No OpenAI SDK needed."""
+        """Call Groq chat completions directly via httpx (async). No OpenAI SDK needed.
+        
+        Validates all responses, handles errors gracefully, and provides detailed
+        logging for debugging API issues.
+        """
         import httpx, traceback
         url = "https://api.groq.com/openai/v1/chat/completions"
         headers = {
@@ -265,75 +269,195 @@ class LLMSummarizer:
                 resp = await client.post(url, json=payload, headers=headers)
                 status = resp.status_code
                 body = resp.text
-                print(f"[GROQ] HTTP {status}, len={len(body)}")
+                print(f"[GROQ] HTTP {status}, response_len={len(body)}")
+                
+                # Check HTTP status code
                 if status != 200:
                     print(f"[GROQ] Error {status}: {body[:500]}")
+                    # Try to parse error details if available
+                    try:
+                        error_data = resp.json()
+                        if "error" in error_data:
+                            print(f"[GROQ] Error details: {error_data['error']}")
+                    except:
+                        pass
                     return None
-                data = resp.json()
+                
+                # Parse JSON response
+                try:
+                    data = resp.json()
+                except Exception as e:
+                    print(f"[GROQ] Failed to parse JSON: {e}")
+                    print(f"[GROQ] Response body: {body[:300]}")
+                    return None
+                
+                # Validate response structure
+                if not isinstance(data, dict):
+                    print(f"[GROQ] Invalid response structure: {type(data)}")
+                    return None
+                
+                # Check for choices
                 choices = data.get("choices", [])
                 if not choices:
-                    print(f"[GROQ] No choices: {body[:300]}")
+                    print(f"[GROQ] No choices in response")
+                    print(f"[GROQ] Response keys: {list(data.keys())}")
                     return None
-                content = choices[0].get("message", {}).get("content", "")
-                return content
+                
+                # Extract message content
+                first_choice = choices[0]
+                if not isinstance(first_choice, dict):
+                    print(f"[GROQ] Invalid choice structure: {type(first_choice)}")
+                    return None
+                
+                message = first_choice.get("message", {})
+                if not isinstance(message, dict):
+                    print(f"[GROQ] Invalid message structure: {type(message)}")
+                    return None
+                
+                content = message.get("content", "")
+                if not isinstance(content, str):
+                    print(f"[GROQ] Content is not string: {type(content)}")
+                    return None
+                
+                if not content.strip():
+                    print(f"[GROQ] Empty content in response")
+                    return None
+                
+                return content.strip()
+                
+        except httpx.TimeoutException:
+            print(f"[GROQ] Request timed out after 120 seconds")
+            return None
+        except httpx.ConnectError as e:
+            print(f"[GROQ] Connection error: {e}")
+            return None
         except Exception as e:
             tb = traceback.format_exc()
-            print(f"[GROQ] Exception: {e}\n{tb[:500]}")
+            print(f"[GROQ] Exception: {e}")
+            print(f"[GROQ] Traceback: {tb[:500]}")
             return None
 
     async def summarize_minutes(self, minutes, image_fetcher=None):
+        """Summarize city council minutes using OCR or text extraction.
+        
+        Flow:
+        1. If raw_text exists and is meaningful -> use text mode (fast)
+        2. If page_image_urls exist -> use OCR mode (extract text from images)
+        3. Otherwise -> fallback to text mode
+        
+        Returns SummaryResponse with extracted data, or a stub response if
+        the document cannot be processed.
+        """
         # Prefer text mode when raw_text has meaningful content (much faster - avoids OCR)
         has_text = minutes.raw_text and len(minutes.raw_text.strip()) > 100
         if has_text:
             stub_patterns = ["this document is a scanned image", "page images are available at the following urls", "no detailed minutes text available"]
             is_stub = any(p in minutes.raw_text.lower() for p in stub_patterns)
             if not is_stub:
-                print(f"[OCR] Skipping OCR - using existing raw_text ({len(minutes.raw_text)} chars)")
+                print(f"[PIPELINE] Skipping OCR - using existing raw_text ({len(minutes.raw_text)} chars)")
                 return await self._summarize_with_text(minutes)
 
+        # Check if we have page images to OCR
+        has_page_urls = minutes.page_image_urls and len(minutes.page_image_urls) > 0
+        print(f"[PIPELINE] has_text={bool(has_text)}, has_page_urls={has_page_urls}, image_fetcher={image_fetcher is not None}")
+        
         # No text available, try OCR on images
-        ocr_capable = self._easyocr_available or self._pytesseract_available or self._pillow_available
-        if minutes.page_image_urls:
-            if ocr_capable:
-                return await self._summarize_with_ocr(minutes, image_fetcher)
-            else:
-                print("[OCR] No local OCR, trying image download anyway...")
-                if image_fetcher:
-                    try:
-                        image_bytes = await image_fetcher()
-                        if image_bytes:
-                            return await self._summarize_with_ocr(minutes, image_fetcher)
-                    except Exception as e:
-                        print(f"[WARN] Image download failed: {e}")
+        ocr_capable = self._easyocr_available or self._pytesseract_available
+        if has_page_urls:
+            print(f"[PIPELINE] Attempting OCR on {len(minutes.page_image_urls)} page URLs (local_ocr={ocr_capable})")
+            return await self._summarize_with_ocr(minutes, image_fetcher)
+        
+        # No images, fallback to text mode
+        print(f"[PIPELINE] No page images found, using text mode")
         return await self._summarize_with_text(minutes)
 
-    def _ocr_with_ocrspace(self, image_bytes):
-        """Free OCR.space API — no API key needed, 25k requests/month."""
+    async def _ocr_with_ocrspace(self, image_bytes):
+        """Free OCR.space API — no API key needed, 25k requests/month.
+        
+        Validates image format and size before uploading.
+        Handles API errors gracefully with detailed error messages.
+        Uses async httpx to avoid blocking the event loop.
+        """
         import httpx
-        img_b64 = base64.b64encode(image_bytes).decode("utf-8")
+        
+        # Validate image bytes
+        if not image_bytes:
+            print("[OCR.SPACE] Error: No image bytes provided")
+            return ""
+        
+        if len(image_bytes) > 10 * 1024 * 1024:  # 10MB limit for OCR.space
+            print(f"[OCR.SPACE] Warning: Image too large ({len(image_bytes)} bytes), attempting compression...")
+            # Try to compress with Pillow if available
+            if self._pillow_available:
+                try:
+                    import io
+                    from PIL import Image
+                    img = Image.open(io.BytesIO(image_bytes))
+                    # Convert to RGB if needed
+                    if img.mode != 'RGB':
+                        img = img.convert('RGB')
+                    # Reduce size
+                    img.thumbnail((1920, 2560))  # Standard document dimensions
+                    buf = io.BytesIO()
+                    img.save(buf, format='PNG', optimize=True)
+                    image_bytes = buf.getvalue()
+                    print(f"[OCR.SPACE] Compressed to {len(image_bytes)} bytes")
+                except Exception as e:
+                    print(f"[OCR.SPACE] Compression failed: {e}")
+            else:
+                print("[OCR.SPACE] Pillow not available for compression, proceeding anyway")
+        
         try:
-            resp = httpx.post(
-                "https://api.ocr.space/parse/image",
-                data={
-                    "base64Image": f"data:image/png;base64,{img_b64}",
-                    "language": "eng",
-                    "isOverlayRequired": False,
-                    "OCREngine": 2,
-                },
-                headers={"apikey": "helloworld"},
-                timeout=30.0,
-            )
-            if resp.status_code == 200:
-                data = resp.json()
-                if data.get("IsErroredOnProcessing"):
-                    print(f"[OCR.SPACE] Error: {data.get('ErrorMessage')}")
+            img_b64 = base64.b64encode(image_bytes).decode("utf-8")
+            
+            async with httpx.AsyncClient(timeout=60.0) as client:
+                resp = await client.post(
+                    "https://api.ocr.space/parse/image",
+                    data={
+                        "base64Image": f"data:image/png;base64,{img_b64}",
+                        "language": "eng",
+                        "isOverlayRequired": False,
+                        "OCREngine": 2,
+                    },
+                    headers={"apikey": "helloworld"},
+                )
+                
+                # Check HTTP status
+                if resp.status_code != 200:
+                    print(f"[OCR.SPACE] HTTP {resp.status_code}: {resp.text[:500]}")
                     return ""
-                parsed = data.get("ParsedResults", [])
-                if parsed:
-                    return parsed[0].get("ParsedText", "")
+                
+                # Parse JSON response
+                try:
+                    data = resp.json()
+                except Exception as e:
+                    print(f"[OCR.SPACE] Failed to parse JSON response: {e}")
+                    return ""
+                
+                # Check for API-level errors
+                if data.get("IsErroredOnProcessing"):
+                    error_msg = data.get('ErrorMessage', 'Unknown error')
+                    print(f"[OCR.SPACE] API Error: {error_msg}")
+                    return ""
+                
+                # Extract parsed text
+                parsed_results = data.get("ParsedResults", [])
+                if not parsed_results:
+                    print(f"[OCR.SPACE] No ParsedResults in response")
+                    return ""
+                
+                parsed_text = parsed_results[0].get("ParsedText", "")
+                if not parsed_text or len(parsed_text.strip()) < 20:
+                    print(f"[OCR.SPACE] Returned text too short ({len(parsed_text)} chars)")
+                    return ""
+                
+                return parsed_text.strip()
+            
         except Exception as e:
-            print(f"[OCR.SPACE] Failed: {e}")
-        return ""
+            print(f"[OCR.SPACE] Exception: {e}")
+            import traceback
+            print(f"[OCR.SPACE] Traceback: {traceback.format_exc()[:300]}")
+            return ""
 
     async def _summarize_with_ocr(self, minutes, image_fetcher=None):
         """Primary OCR path: OCR.space (free) -> fallback to text mode."""
@@ -357,7 +481,7 @@ class LLMSummarizer:
         print("[OCR] Extracting text via free OCR.space API (1 page)...")
         ocr_parts = []
         for i, img_bytes in enumerate(image_bytes_list[:1]):
-            page_text = self._ocr_with_ocrspace(img_bytes)
+            page_text = await self._ocr_with_ocrspace(img_bytes)
             if page_text and len(page_text.strip()) > 20:
                 ocr_parts.append(f"--- Page {i + 1} ---\n{page_text.strip()}")
                 print(f"[OCR] Page {i + 1}: {len(page_text.strip())} chars")
@@ -387,18 +511,35 @@ class LLMSummarizer:
                 max_tokens=4096,
             )
             if raw_content is None:
+                print(f"[OCR] Groq API call failed")
                 return self._build_unreadable_response(minutes, reason="groq-api-failed")
 
             print(f"[GROQ] Raw response length: {len(raw_content)}")
-            # Strip code blocks if present
-            if "```json" in raw_content:
-                raw_content = raw_content.split("```json")[1].split("```")[0].strip()
-            elif "```" in raw_content:
-                raw_content = raw_content.split("```")[1].split("```")[0].strip()
+            
+            # Extract JSON from response, handling code blocks
+            json_content = raw_content.strip()
+            if "```json" in json_content:
+                try:
+                    json_content = json_content.split("```json")[1].split("```")[0].strip()
+                except IndexError:
+                    print(f"[GROQ] Failed to extract JSON from ```json``` block")
+                    pass
+            elif "```" in json_content:
+                try:
+                    json_content = json_content.split("```")[1].split("```")[0].strip()
+                except IndexError:
+                    print(f"[GROQ] Failed to extract JSON from ``` block")
+                    pass
+            
+            # Try to parse JSON
             try:
-                result = json.loads(raw_content)
+                result = json.loads(json_content)
+                if not isinstance(result, dict):
+                    print(f"[GROQ] JSON root is not dict: {type(result)}")
+                    return self._build_unreadable_response(minutes, reason="groq-invalid-structure")
             except json.JSONDecodeError as e:
-                print(f"[GROQ] JSON parse error: {e}, raw: {raw_content[:300]}")
+                print(f"[GROQ] JSON parse error at position {e.pos}: {e.msg}")
+                print(f"[GROQ] Raw response (first 500 chars): {raw_content[:500]}")
                 return self._build_unreadable_response(minutes, reason="groq-json-parse-error")
 
             return SummaryResponse(
@@ -443,17 +584,34 @@ class LLMSummarizer:
             max_tokens=2000,
         )
         if raw_content is None:
+            print(f"[TEXT] Groq API call failed")
             return self._build_unreadable_response(minutes, reason="groq-api-failed")
 
-        # Strip code blocks if present
-        if "```json" in raw_content:
-            raw_content = raw_content.split("```json")[1].split("```")[0].strip()
-        elif "```" in raw_content:
-            raw_content = raw_content.split("```")[1].split("```")[0].strip()
+        print(f"[TEXT] Groq response length: {len(raw_content)}")
+        
+        # Extract JSON from response, handling code blocks
+        json_content = raw_content.strip()
+        if "```json" in json_content:
+            try:
+                json_content = json_content.split("```json")[1].split("```")[0].strip()
+            except IndexError:
+                print(f"[TEXT] Failed to extract JSON from ```json``` block")
+                pass
+        elif "```" in json_content:
+            try:
+                json_content = json_content.split("```")[1].split("```")[0].strip()
+            except IndexError:
+                print(f"[TEXT] Failed to extract JSON from ``` block")
+                pass
+        
         try:
-            result = json.loads(raw_content)
+            result = json.loads(json_content)
+            if not isinstance(result, dict):
+                print(f"[TEXT] JSON root is not dict: {type(result)}")
+                return self._build_unreadable_response(minutes, reason="groq-invalid-structure")
         except json.JSONDecodeError as e:
-            print(f"[GROQ] JSON parse error: {e}, raw: {raw_content[:300]}")
+            print(f"[TEXT] JSON parse error at position {e.pos}: {e.msg}")
+            print(f"[TEXT] Raw response (first 500 chars): {raw_content[:500]}")
             return self._build_unreadable_response(minutes, reason="groq-json-parse-error")
 
         return SummaryResponse(

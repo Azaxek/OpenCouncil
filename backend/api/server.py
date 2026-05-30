@@ -258,9 +258,11 @@ async def _auto_summarize_minutes(minutes: Minutes, force: bool = False) -> Opti
         )
         if has_urls and hasattr(conn, 'fetch_page_images'):
             _page_urls = list(minutes.page_image_urls)
-            image_fetcher = lambda: conn.fetch_page_images(
-                minutes.document_url, page_urls=_page_urls
-            )
+            _doc_url = minutes.document_url
+            _conn = conn
+            async def _image_fetcher():
+                return await _conn.fetch_page_images(_doc_url, page_urls=_page_urls)
+            image_fetcher = _image_fetcher
 
         summary = await summarizer.summarize_minutes(
             minutes,
@@ -751,12 +753,14 @@ async def summarize_minutes_endpoint(request: SummaryRequest):
         )
         if has_urls:
             _page_urls = list(minutes.page_image_urls)
+            _doc_url = minutes.document_url
             # Try to find a connector with fetch_page_images
             for city_key, conn in connectors.items():
                 if hasattr(conn, 'fetch_page_images'):
-                    image_fetcher = lambda: conn.fetch_page_images(
-                        minutes.document_url, page_urls=_page_urls
-                    )
+                    _fetch_conn = conn
+                    async def _image_fetcher():
+                        return await _fetch_conn.fetch_page_images(_doc_url, page_urls=_page_urls)
+                    image_fetcher = _image_fetcher
                     break
 
         summary = await summarizer.summarize_minutes(

@@ -224,6 +224,54 @@ class GenericPDFConnector:
         """PDFs can be downloaded directly, return URL for OCR pipeline."""
         return [document_url]
 
+    async def fetch_page_images(self, document_url: str, page_urls: Optional[list[str]] = None) -> list[bytes]:
+        """Download a PDF and render its pages to PNG images for OCR processing.
+        
+        Uses PyMuPDF (fitz) if available to render PDF pages at 300 DPI.
+        Falls back to returning empty list if PyMuPDF is not installed.
+        """
+        urls = page_urls or [document_url]
+        images: list[bytes] = []
+        
+        for url in urls:
+            try:
+                response = await self.client.get(url)
+                response.raise_for_status()
+                pdf_bytes = response.content
+                
+                if pdf_bytes[:4] != b'%PDF':
+                    print(f"[GenericPDF] URL {url} is not a valid PDF")
+                    continue
+                
+                try:
+                    import fitz
+                    pdf_doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+                    zoom = 300 / 72  # 300 DPI
+                    mat = fitz.Matrix(zoom, zoom)
+                    
+                    for page_num in range(len(pdf_doc)):
+                        page = pdf_doc[page_num]
+                        pix = page.get_pixmap(matrix=mat)
+                        img_bytes = pix.tobytes("png")
+                        if img_bytes:
+                            images.append(img_bytes)
+                            print(f"[GenericPDF] Rendered page {page_num + 1}: {len(img_bytes)} bytes")
+                    
+                    pdf_doc.close()
+                    print(f"[GenericPDF] Total: {len(images)} pages from PDF")
+                except ImportError:
+                    print("[GenericPDF] PyMuPDF (fitz) not installed, cannot render PDF pages")
+                    print("       Install with: pip install PyMuPDF")
+                    return []
+                except Exception as e:
+                    print(f"[GenericPDF] PDF rendering failed: {e}")
+                    return []
+            except Exception as e:
+                print(f"[GenericPDF] Failed to download PDF from {url}: {e}")
+                continue
+        
+        return images
+
     async def get_latest_minutes(self) -> Optional[Minutes]:
         """Fetch the most recent minutes."""
         minutes_list = await self.fetch_minutes_list(limit=5)

@@ -110,7 +110,7 @@ class CivicPlusConnector:
         try:
             response = await self.client.get(agenda_url)
             response.raise_for_status()
-            soup = BeautifulSoup(response.text, "lxml")
+            soup = BeautifulSoup(response.text, PARSER)
 
             # Extract document links
             documents = []
