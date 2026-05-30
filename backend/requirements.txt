@@ -10,16 +10,8 @@ python-dotenv>=1.0.0
 # Groq AI client
 openai>=1.0.0
 
-# Encryption for API keys
-cryptography>=42.0.0
-
-# Database — PostgreSQL for Vercel, SQLite for local
-# Pure-Python driver (no native deps) for Lambda compatibility
-pg8000>=1.30.0
-
 # Vercel serverless adapter
 mangum>=0.17.0
 
-# Minimal image handling (Pillow only, not PyTorch)
-Pillow>=10.0.0
-numpy>=1.24.0
+# Pure-Python PostgreSQL driver (no native extensions)
+pg8000>=1.30.0
