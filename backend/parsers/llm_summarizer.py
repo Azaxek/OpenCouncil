@@ -1,6 +1,6 @@
 """
 LLM-powered summarization pipeline for OpenCouncil.
-Uses Groq API (OpenAI-compatible) for free LLM inference.
+Uses Groq API directly via httpx (no OpenAI SDK dependency issues).
 OCR.space (free, no API key) for scanning documents.
 """
 
@@ -13,7 +13,6 @@ import re
 import sys
 from typing import Awaitable, Callable, Optional
 
-from openai import AsyncOpenAI
 
 from models.schemas import Minutes, SummaryResponse
 
@@ -181,10 +180,6 @@ class LLMSummarizer:
     def __init__(self, grok_key=None, text_model="llama-3.1-8b-instant"):
         self.grok_key = grok_key or os.getenv("GROK_API_KEY")
         self.text_model = text_model
-        if self.grok_key:
-            self.deepseek_client = AsyncOpenAI(api_key=self.grok_key, base_url="https://api.groq.com/openai/v1")
-        else:
-            self.deepseek_client = None
         if not self.grok_key:
             raise ValueError("GROK_API_KEY is required.")
 
@@ -247,6 +242,36 @@ class LLMSummarizer:
             key_decisions=[], budget_items=[], public_comment_opportunities=[], items=[],
         )
 
+    async def _call_groq(self, system_prompt, user_content, max_tokens=4096):
+        """Call Groq chat completions directly via httpx (async). No OpenAI SDK needed."""
+        import httpx
+        url = "https://api.groq.com/openai/v1/chat/completions"
+        headers = {
+            "Authorization": f"Bearer {self.grok_key}",
+            "Content-Type": "application/json",
+        }
+        payload = {
+            "model": self.text_model,
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_content},
+            ],
+            "temperature": 0.0,
+            "max_tokens": max_tokens,
+        }
+        async with httpx.AsyncClient(timeout=120.0) as client:
+            resp = await client.post(url, json=payload, headers=headers)
+            if resp.status_code != 200:
+                print(f"[GROQ] HTTP {resp.status_code}: {resp.text[:300]}")
+                return None
+            data = resp.json()
+            choices = data.get("choices", [])
+            if not choices:
+                print(f"[GROQ] No choices in response: {data}")
+                return None
+            content = choices[0].get("message", {}).get("content", "")
+            return content
+
     async def summarize_minutes(self, minutes, image_fetcher=None):
         ocr_capable = self._easyocr_available or self._pytesseract_available or self._pillow_available
         if minutes.page_image_urls:
@@ -261,9 +286,7 @@ class LLMSummarizer:
                             return await self._summarize_with_ocr(minutes, image_fetcher)
                     except Exception as e:
                         print(f"[WARN] Image download failed: {e}")
-        if self.deepseek_client:
-            return await self._summarize_with_text(minutes)
-        raise RuntimeError("No LLM client available.")
+        return await self._summarize_with_text(minutes)
 
     def _ocr_with_ocrspace(self, image_bytes):
         """Free OCR.space API — no API key needed, 25k requests/month."""
@@ -309,12 +332,9 @@ class LLMSummarizer:
 
         if not image_bytes_list:
             print("[OCR] No images, falling back to text mode")
-            if self.deepseek_client:
-                return await self._summarize_with_text(minutes)
-            raise RuntimeError("No image data and no text fallback.")
+            return await self._summarize_with_text(minutes)
 
         # Use free OCR.space API to extract text from scanned images.
-        # Works on Vercel Lambda with no local binaries needed.
         print("[OCR] Extracting text via free OCR.space API...")
         ocr_parts = []
         for i, img_bytes in enumerate(image_bytes_list[:5]):
@@ -342,30 +362,26 @@ class LLMSummarizer:
                 f"Do not include any text outside the JSON object."
             )
 
+            raw_content = await self._call_groq(
+                MINUTES_SYSTEM_PROMPT + "\n\nIMPORTANT: Return ONLY valid JSON. Do not include any text outside the JSON object.",
+                user_content,
+                max_tokens=4096,
+            )
+            if raw_content is None:
+                return self._build_unreadable_response(minutes, reason="groq-api-failed")
+
+            print(f"[GROQ] Raw response length: {len(raw_content)}")
+            # Strip code blocks if present
+            if "```json" in raw_content:
+                raw_content = raw_content.split("```json")[1].split("```")[0].strip()
+            elif "```" in raw_content:
+                raw_content = raw_content.split("```")[1].split("```")[0].strip()
             try:
-                response = await self.deepseek_client.chat.completions.create(
-                    model=self.text_model,
-                    messages=[
-                        {"role": "system", "content": MINUTES_SYSTEM_PROMPT + "\n\nIMPORTANT: Return ONLY valid JSON. Do not include any text outside the JSON object."},
-                        {"role": "user", "content": user_content},
-                    ],
-                    temperature=0.0,
-                    max_tokens=4096,
-                )
-                raw_content = response.choices[0].message.content
-                print(f"[GROQ] Raw response length: {len(raw_content)}")
-                # Strip code blocks if present
-                if "```json" in raw_content:
-                    raw_content = raw_content.split("```json")[1].split("```")[0].strip()
-                elif "```" in raw_content:
-                    raw_content = raw_content.split("```")[1].split("```")[0].strip()
                 result = json.loads(raw_content)
             except json.JSONDecodeError as e:
                 print(f"[GROQ] JSON parse error: {e}, raw: {raw_content[:300]}")
-                return self._build_unreadable_response(minutes, reason=f"groq-json-parse-error")
-            except Exception as e:
-                print(f"[GROQ] API call failed: {type(e).__name__}: {e}")
-                return self._build_unreadable_response(minutes, reason=f"groq-api-failed")
+                return self._build_unreadable_response(minutes, reason="groq-json-parse-error")
+
             return SummaryResponse(
                 minutes_id=minutes.id,
                 meeting_date=minutes.meeting_date,
@@ -381,12 +397,10 @@ class LLMSummarizer:
 
         # Last resort: text mode
         print("[OCR] All OCR methods failed, falling back to text mode")
-        if self.deepseek_client:
-            return await self._summarize_with_text(minutes)
-        raise RuntimeError("All OCR methods and text fallback failed.")
+        return await self._summarize_with_text(minutes)
 
     async def _summarize_with_text(self, minutes):
-        """Summarize using Groq text model."""
+        """Summarize using Groq text model via direct httpx."""
         minutes_text = self._prepare_minutes_text(minutes)
         stub_indicators = ["this document is a scanned image", "ocr text extraction was not available", "no detailed minutes text available"]
         if any(indicator in minutes_text.lower() for indicator in stub_indicators):
@@ -404,13 +418,25 @@ class LLMSummarizer:
             f"Do not include any text outside the JSON object."
         )
 
-        # Use AsyncOpenAI client — truly async, no event loop blocking
-        response = await self.deepseek_client.chat.completions.create(
-            model=self.text_model,
-            messages=[{"role": "system", "content": MINUTES_SYSTEM_PROMPT}, {"role": "user", "content": user_content}],
-            temperature=0.0, max_tokens=2000, response_format={"type": "json_object"},
+        raw_content = await self._call_groq(
+            MINUTES_SYSTEM_PROMPT + "\n\nIMPORTANT: Return ONLY valid JSON. Do not include any text outside the JSON object.",
+            user_content,
+            max_tokens=2000,
         )
-        result = json.loads(response.choices[0].message.content)
+        if raw_content is None:
+            return self._build_unreadable_response(minutes, reason="groq-api-failed")
+
+        # Strip code blocks if present
+        if "```json" in raw_content:
+            raw_content = raw_content.split("```json")[1].split("```")[0].strip()
+        elif "```" in raw_content:
+            raw_content = raw_content.split("```")[1].split("```")[0].strip()
+        try:
+            result = json.loads(raw_content)
+        except json.JSONDecodeError as e:
+            print(f"[GROQ] JSON parse error: {e}, raw: {raw_content[:300]}")
+            return self._build_unreadable_response(minutes, reason="groq-json-parse-error")
+
         return SummaryResponse(
             minutes_id=minutes.id,
             meeting_date=minutes.meeting_date,
