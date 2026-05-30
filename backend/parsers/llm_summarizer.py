@@ -10,7 +10,7 @@ import re
 import sys
 from typing import Awaitable, Callable, Optional
 
-from openai import OpenAI
+from openai import AsyncOpenAI
 
 from models.schemas import Minutes, SummaryResponse
 
@@ -179,7 +179,7 @@ class LLMSummarizer:
         self.grok_key = grok_key or os.getenv("GROK_API_KEY")
         self.text_model = text_model
         if self.grok_key:
-            self.deepseek_client = OpenAI(api_key=self.grok_key, base_url="https://api.groq.com/openai/v1")
+            self.deepseek_client = AsyncOpenAI(api_key=self.grok_key, base_url="https://api.groq.com/openai/v1")
         else:
             self.deepseek_client = None
         if not self.grok_key:
@@ -341,9 +341,7 @@ class LLMSummarizer:
                 f"Do not include any text outside the JSON object."
             )
 
-            # Run the Groq API call directly (sync client works fine in async context)
-            # Use a blocking call wrapped in asyncio loop
-            response = self.deepseek_client.chat.completions.create(
+            response = await self.deepseek_client.chat.completions.create(
                 model=self.text_model,
                 messages=[
                     {"role": "system", "content": MINUTES_SYSTEM_PROMPT},
@@ -392,7 +390,7 @@ class LLMSummarizer:
             f"Do not include any text outside the JSON object."
         )
 
-        response = self.deepseek_client.chat.completions.create(
+        response = await self.deepseek_client.chat.completions.create(
             model=self.text_model,
             messages=[{"role": "system", "content": MINUTES_SYSTEM_PROMPT}, {"role": "user", "content": user_content}],
             temperature=0.0, max_tokens=2000, response_format={"type": "json_object"},
