@@ -341,17 +341,21 @@ class LLMSummarizer:
                 f"Do not include any text outside the JSON object."
             )
 
-            response = await self.deepseek_client.chat.completions.create(
-                model=self.text_model,
-                messages=[
-                    {"role": "system", "content": MINUTES_SYSTEM_PROMPT},
-                    {"role": "user", "content": user_content},
-                ],
-                temperature=0.0,
-                max_tokens=4096,
-                response_format={"type": "json_object"},
-            )
-            result = json.loads(response.choices[0].message.content)
+            try:
+                response = await self.deepseek_client.chat.completions.create(
+                    model=self.text_model,
+                    messages=[
+                        {"role": "system", "content": MINUTES_SYSTEM_PROMPT},
+                        {"role": "user", "content": user_content},
+                    ],
+                    temperature=0.0,
+                    max_tokens=4096,
+                    response_format={"type": "json_object"},
+                )
+                result = json.loads(response.choices[0].message.content)
+            except Exception as e:
+                print(f"[GROQ] API call failed: {e}")
+                return self._build_unreadable_response(minutes, reason=f"groq-api-failed")
             return SummaryResponse(
                 minutes_id=minutes.id,
                 meeting_date=minutes.meeting_date,
