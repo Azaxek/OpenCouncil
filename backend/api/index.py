@@ -26,10 +26,26 @@ class _ASGI2WSGI:
 
     Takes a FastAPI ASGI app and wraps it as a WSGI callable,
     which Vercel Lambda can invoke directly.
+
+    IMPORTANT: We reuse the same event loop across requests so that
+    async operations (like httpx client calls in summarization) work
+    across multiple async function calls within a single request.
     """
 
     def __init__(self, asgi_app):
         self.asgi_app = asgi_app
+        self._loop = None
+
+    def _get_loop(self):
+        """Get or create a persistent event loop for this request chain."""
+        try:
+            loop = asyncio.get_running_loop()
+            return loop
+        except RuntimeError:
+            if self._loop is None or self._loop.is_closed():
+                self._loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(self._loop)
+            return self._loop
 
     async def _run_app(self, scope, body):
         """Run the ASGI app and collect the response."""
@@ -85,12 +101,8 @@ class _ASGI2WSGI:
 
         body = env.get("wsgi.input", io.BytesIO(b"")).read()
 
-        loop = asyncio.new_event_loop()
-        try:
-            asyncio.set_event_loop(loop)
-            response = loop.run_until_complete(self._run_app(scope, body))
-        finally:
-            loop.close()
+        loop = self._get_loop()
+        response = loop.run_until_complete(self._run_app(scope, body))
 
         status_code = response["status"]
         status_text = "OK" if 200 <= status_code < 300 else "Error"

@@ -262,30 +262,31 @@ class LLMSummarizer:
             return await self._summarize_with_text(minutes)
         raise RuntimeError("No LLM client available.")
 
-    async def _ocr_with_ocrspace(self, image_bytes):
+    def _ocr_with_ocrspace(self, image_bytes):
         """Free OCR.space API — no API key needed, 25k requests/month."""
-        import base64, httpx
+        import base64
+        import httpx
         img_b64 = base64.b64encode(image_bytes).decode("utf-8")
         try:
-            async with httpx.AsyncClient(timeout=30.0) as client:
-                resp = await client.post(
-                    "https://api.ocr.space/parse/image",
-                    data={
-                        "base64Image": f"data:image/png;base64,{img_b64}",
-                        "language": "eng",
-                        "isOverlayRequired": False,
-                        "OCREngine": 2,
-                    },
-                    headers={"apikey": "helloworld"},
-                )
-                if resp.status_code == 200:
-                    data = resp.json()
-                    if data.get("IsErroredOnProcessing"):
-                        print(f"[OCR.SPACE] Error: {data.get('ErrorMessage')}")
-                        return ""
-                    parsed = data.get("ParsedResults", [])
-                    if parsed:
-                        return parsed[0].get("ParsedText", "")
+            resp = httpx.post(
+                "https://api.ocr.space/parse/image",
+                data={
+                    "base64Image": f"data:image/png;base64,{img_b64}",
+                    "language": "eng",
+                    "isOverlayRequired": False,
+                    "OCREngine": 2,
+                },
+                headers={"apikey": "helloworld"},
+                timeout=30.0,
+            )
+            if resp.status_code == 200:
+                data = resp.json()
+                if data.get("IsErroredOnProcessing"):
+                    print(f"[OCR.SPACE] Error: {data.get('ErrorMessage')}")
+                    return ""
+                parsed = data.get("ParsedResults", [])
+                if parsed:
+                    return parsed[0].get("ParsedText", "")
         except Exception as e:
             print(f"[OCR.SPACE] Failed: {e}")
         return ""
@@ -363,11 +364,11 @@ class LLMSummarizer:
                 what_you_can_do=[d if isinstance(d, dict) else {"description": d} for d in result.get("what_you_can_do", [])],
             )
 
-        # Fallback: OCR.space
+        # Fallback: OCR.space (synchronous API call)
         print("[OCR] Vision failed, trying free OCR.space API")
         ocr_parts = []
         for i, img_bytes in enumerate(image_bytes_list[:5]):
-            page_text = await self._ocr_with_ocrspace(img_bytes)
+            page_text = self._ocr_with_ocrspace(img_bytes)
             if page_text and len(page_text.strip()) > 20:
                 ocr_parts.append(f"--- Page {i + 1} ---\n{page_text.strip()}")
                 print(f"[OCR] Page {i + 1}: {len(page_text.strip())} chars")
