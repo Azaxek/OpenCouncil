@@ -244,11 +244,12 @@ class LLMSummarizer:
 
     async def _call_groq(self, system_prompt, user_content, max_tokens=4096):
         """Call Groq chat completions directly via httpx (async). No OpenAI SDK needed."""
-        import httpx
+        import httpx, traceback
         url = "https://api.groq.com/openai/v1/chat/completions"
         headers = {
             "Authorization": f"Bearer {self.grok_key}",
             "Content-Type": "application/json",
+            "User-Agent": "OpenCouncil/1.0",
         }
         payload = {
             "model": self.text_model,
@@ -259,18 +260,26 @@ class LLMSummarizer:
             "temperature": 0.0,
             "max_tokens": max_tokens,
         }
-        async with httpx.AsyncClient(timeout=120.0) as client:
-            resp = await client.post(url, json=payload, headers=headers)
-            if resp.status_code != 200:
-                print(f"[GROQ] HTTP {resp.status_code}: {resp.text[:300]}")
-                return None
-            data = resp.json()
-            choices = data.get("choices", [])
-            if not choices:
-                print(f"[GROQ] No choices in response: {data}")
-                return None
-            content = choices[0].get("message", {}).get("content", "")
-            return content
+        try:
+            async with httpx.AsyncClient(timeout=120.0) as client:
+                resp = await client.post(url, json=payload, headers=headers)
+                status = resp.status_code
+                body = resp.text
+                print(f"[GROQ] HTTP {status}, len={len(body)}")
+                if status != 200:
+                    print(f"[GROQ] Error {status}: {body[:500]}")
+                    return None
+                data = resp.json()
+                choices = data.get("choices", [])
+                if not choices:
+                    print(f"[GROQ] No choices: {body[:300]}")
+                    return None
+                content = choices[0].get("message", {}).get("content", "")
+                return content
+        except Exception as e:
+            tb = traceback.format_exc()
+            print(f"[GROQ] Exception: {e}\n{tb[:500]}")
+            return None
 
     async def summarize_minutes(self, minutes, image_fetcher=None):
         ocr_capable = self._easyocr_available or self._pytesseract_available or self._pillow_available
