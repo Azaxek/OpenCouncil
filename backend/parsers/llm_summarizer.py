@@ -864,13 +864,12 @@ class LLMSummarizer:
         """Summarize minutes using OCR on scanned document images.
 
         Priority:
-        1. Groq Vision API (server-side, no local OCR needed) — best for Vercel/Lambda
-        2. EasyOCR (primary local) — deep-learning based, MIT license, best accuracy.
-        3. Tesseract (fallback) — traditional OCR, used when EasyOCR unavailable.
+        1. Groq Vision API (server-side, no local OCR needed) — free with API key
+        2. EasyOCR (primary local) — deep-learning based, MIT license
+        3. Tesseract (fallback) — traditional OCR
 
-        Downloads each page image, then either:
-        - Sends images directly to Groq Vision (preferred on serverless)
-        - Runs local OCR, then passes extracted text to LLM for summarization
+        On Vercel Lambda (no local OCR binaries), Groq Vision does all the work
+        by sending page images directly to the LLM which reads the text.
         """
         # Determine if we have URLs or actual image data
         has_urls = (
@@ -891,33 +890,31 @@ class LLMSummarizer:
                     f"[WARN] Failed to download page images: {e}"
                 )
         elif not has_urls:
-            # Already bytes
             image_bytes_list = [
                 b for b in minutes.page_image_urls
                 if isinstance(b, bytes)
             ]
 
         if not image_bytes_list:
-            print(
-                "[WARN] No image data available for OCR, "
-                "falling back to text mode"
-            )
+            print("[WARN] No image data available for OCR, falling back to text mode")
             if self.deepseek_client:
                 return await self._summarize_with_text(minutes)
-            raise RuntimeError(
-                "OCR failed: no image data and no text fallback."
-            )
+            raise RuntimeError("OCR failed: no image data and no text fallback.")
 
-        # On serverless (Vercel Lambda), local OCR engines aren't available.
-        # Use Groq Vision API directly — it reads text from images server-side.
-        if not self._easyocr_available and not self._pytesseract_available:
-            print("[VISION] No local OCR engines — using Groq Vision API")
-            try:
-                return await self._summarize_with_llm_vision(minutes, image_bytes_list)
-            except Exception as e:
-                print(f"[VISION] Groq Vision failed: {e}, trying local OCR fallback...")
+        # ALWAYS try Groq Vision API first — it's free (uses existing API key),
+        # works on any platform, and reads text from images better than local OCR.
+        # This is the primary path on Vercel Lambda where OCR binaries don't exist.
+        try:
+            print("[VISION] Using Groq Vision API to read text from images")
+            result = await self._summarize_with_llm_vision(minutes, image_bytes_list)
+            # Check if Vision got meaningful content
+            if result.summary and "could not be reliably" not in result.summary:
+                return result
+            print("[VISION] Vision returned limited content, trying local OCR as supplement...")
+        except Exception as e:
+            print(f"[VISION] Groq Vision failed: {e}, trying local OCR fallback...")
 
-        # Run OCR on each page image (only runs if local OCR engines exist)
+        # Run OCR on each page image (only if local OCR engines exist)
         extracted_pages = []
         total_raw_chars = 0
 
