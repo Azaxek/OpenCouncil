@@ -1,7 +1,7 @@
 """
 LLM-powered summarization pipeline for OpenCouncil.
 Uses Groq API directly via httpx (no OpenAI SDK dependency issues).
-OCR.space (free, no API key) for scanning documents.
+Three-tier OCR: PDF text extraction -> OCR.space (free) -> EasyOCR/Tesseract (local)
 """
 
 import asyncio
@@ -168,7 +168,13 @@ REMEMBER: Empty arrays are CORRECT. Fabricated data is WRONG. If in doubt, retur
 
 
 class LLMSummarizer:
-    """Summarizes city council minutes using LLM APIs."""
+    """Summarizes city council minutes using LLM APIs.
+
+    Three-tier OCR pipeline:
+    1. PDF text extraction via PyMuPDF (fitz) — fast, works on digital PDFs
+    2. OCR.space free API — works on scanned images, no API key needed
+    3. EasyOCR / Tesseract (local) — works offline, no rate limits
+    """
 
     MAX_OCR_TEXT_CHARS = 30000
     EASYOCR_LANGUAGES = ['en', 'fr']
@@ -225,6 +231,16 @@ class LLMSummarizer:
         except ImportError:
             print("[WARN] numpy not installed")
 
+        # PyMuPDF for direct PDF text extraction
+        self._fitz_available = False
+        try:
+            import fitz
+            self._fitz = fitz
+            self._fitz_available = True
+            print("[OCR] PyMuPDF (fitz) available for PDF text extraction")
+        except ImportError:
+            print("[WARN] PyMuPDF (fitz) not installed")
+
     async def close(self):
         pass
 
@@ -274,7 +290,6 @@ class LLMSummarizer:
                 # Check HTTP status code
                 if status != 200:
                     print(f"[GROQ] Error {status}: {body[:500]}")
-                    # Try to parse error details if available
                     try:
                         error_data = resp.json()
                         if "error" in error_data:
@@ -338,13 +353,13 @@ class LLMSummarizer:
             return None
 
     async def summarize_minutes(self, minutes, image_fetcher=None):
-        """Summarize city council minutes using OCR or text extraction.
-        
+        """Summarize city council minutes using robust text extraction pipeline.
+
         Flow:
         1. If raw_text exists and is meaningful -> use text mode (fast)
-        2. If page_image_urls exist -> use OCR mode (extract text from images)
-        3. Otherwise -> fallback to text mode
-        
+        2. If page images available -> try PDF text extraction -> try OCR.space -> try EasyOCR/Tesseract
+        3. Otherwise -> fallback to text mode (may produce stub response)
+
         Returns SummaryResponse with extracted data, or a stub response if
         the document cannot be processed.
         """
@@ -360,16 +375,111 @@ class LLMSummarizer:
         # Check if we have page images to OCR
         has_page_urls = minutes.page_image_urls and len(minutes.page_image_urls) > 0
         print(f"[PIPELINE] has_text={bool(has_text)}, has_page_urls={has_page_urls}, image_fetcher={image_fetcher is not None}")
-        
-        # No text available, try OCR on images
-        ocr_capable = self._easyocr_available or self._pytesseract_available
+
         if has_page_urls:
-            print(f"[PIPELINE] Attempting OCR on {len(minutes.page_image_urls)} page URLs (local_ocr={ocr_capable})")
+            print(f"[PIPELINE] Attempting text extraction on {len(minutes.page_image_urls)} pages")
             return await self._summarize_with_ocr(minutes, image_fetcher)
-        
+
         # No images, fallback to text mode
         print(f"[PIPELINE] No page images found, using text mode")
         return await self._summarize_with_text(minutes)
+
+    async def _extract_text_from_pdf_bytes(self, pdf_bytes: bytes) -> Optional[str]:
+        """Extract text directly from PDF bytes using PyMuPDF.
+        
+        Works on digital PDFs (not scanned images).
+        Returns extracted text or None if extraction fails or produces no meaningful text.
+        """
+        if not self._fitz_available or not pdf_bytes:
+            return None
+        
+        if pdf_bytes[:4] != b'%PDF':
+            return None
+        
+        try:
+            pdf_doc = self._fitz.open(stream=pdf_bytes, filetype="pdf")
+            text_parts = []
+            total_chars = 0
+            
+            for page_num in range(len(pdf_doc)):
+                page = pdf_doc[page_num]
+                page_text = page.get_text().strip()
+                if page_text and len(page_text) > 20:
+                    text_parts.append(f"--- Page {page_num + 1} ---\n{page_text}")
+                    total_chars += len(page_text)
+            
+            pdf_doc.close()
+            
+            if total_chars > 100:  # Meaningful text
+                print(f"[PDF-TEXT] Extracted {total_chars} chars from {len(text_parts)} pages")
+                return "\n\n".join(text_parts)[:self.MAX_OCR_TEXT_CHARS]
+            else:
+                print(f"[PDF-TEXT] Only {total_chars} chars extracted - likely scanned image PDF, need OCR")
+                return None
+                
+        except Exception as e:
+            print(f"[PDF-TEXT] Extraction failed: {e}")
+            return None
+
+    async def _ocr_with_easyocr(self, image_bytes: bytes) -> str:
+        """OCR using EasyOCR (local, no API key needed).
+        
+        Best quality local OCR engine. Works with any image format.
+        """
+        if not self._easyocr_available:
+            return ""
+        
+        try:
+            if self._easyocr_reader is None:
+                print("[OCR] Initializing EasyOCR reader (may take a moment)...")
+                self._easyocr_reader = self._easyocr.Reader(
+                    self.EASYOCR_LANGUAGES,
+                    gpu=False,
+                    verbose=False,
+                )
+            
+            # Convert bytes to numpy array
+            img = self._PIL_Image.open(io.BytesIO(image_bytes))
+            img_array = self._np.array(img)
+            
+            results = self._easyocr_reader.readtext(img_array)
+            text = " ".join([r[1] for r in results if r[2] > 0.3])  # Confidence > 30%
+            
+            if text and len(text.strip()) > 20:
+                print(f"[EASYOCR] Extracted {len(text.strip())} chars")
+                return text.strip()
+            return ""
+        except Exception as e:
+            print(f"[EASYOCR] Failed: {e}")
+            return ""
+
+    async def _ocr_with_tesseract(self, image_bytes: bytes) -> str:
+        """OCR using Tesseract (local, open source).
+        
+        Falls back after OCR.space and EasyOCR.
+        """
+        if not self._pytesseract_available or not self._pillow_available:
+            return ""
+        
+        try:
+            img = self._PIL_Image.open(io.BytesIO(image_bytes))
+            # Preprocess: convert to grayscale, increase contrast
+            if img.mode != 'L':
+                img = img.convert('L')
+            # Apply threshold to improve OCR
+            img = self._PIL_ImageOps.autocontrast(img, cutoff=5)
+            text = self._pytesseract.image_to_string(
+                img,
+                lang=self.TESSERACT_LANGUAGES,
+                config='--oem 3 --psm 6',
+            )
+            if text and len(text.strip()) > 20:
+                print(f"[TESSERACT] Extracted {len(text.strip())} chars")
+                return text.strip()
+            return ""
+        except Exception as e:
+            print(f"[TESSERACT] Failed: {e}")
+            return ""
 
     async def _ocr_with_ocrspace(self, image_bytes):
         """Free OCR.space API — no API key needed, 25k requests/month.
@@ -385,27 +495,19 @@ class LLMSummarizer:
             print("[OCR.SPACE] Error: No image bytes provided")
             return ""
         
-        if len(image_bytes) > 10 * 1024 * 1024:  # 10MB limit for OCR.space
-            print(f"[OCR.SPACE] Warning: Image too large ({len(image_bytes)} bytes), attempting compression...")
-            # Try to compress with Pillow if available
+        if len(image_bytes) > 10 * 1024 * 1024:  # 10MB limit
             if self._pillow_available:
                 try:
-                    import io
-                    from PIL import Image
-                    img = Image.open(io.BytesIO(image_bytes))
-                    # Convert to RGB if needed
+                    img = self._PIL_Image.open(io.BytesIO(image_bytes))
                     if img.mode != 'RGB':
                         img = img.convert('RGB')
-                    # Reduce size
-                    img.thumbnail((1920, 2560))  # Standard document dimensions
+                    img.thumbnail((1920, 2560))
                     buf = io.BytesIO()
                     img.save(buf, format='PNG', optimize=True)
                     image_bytes = buf.getvalue()
                     print(f"[OCR.SPACE] Compressed to {len(image_bytes)} bytes")
                 except Exception as e:
                     print(f"[OCR.SPACE] Compression failed: {e}")
-            else:
-                print("[OCR.SPACE] Pillow not available for compression, proceeding anyway")
         
         try:
             img_b64 = base64.b64encode(image_bytes).decode("utf-8")
@@ -422,47 +524,97 @@ class LLMSummarizer:
                     headers={"apikey": "helloworld"},
                 )
                 
-                # Check HTTP status
                 if resp.status_code != 200:
-                    print(f"[OCR.SPACE] HTTP {resp.status_code}: {resp.text[:500]}")
+                    print(f"[OCR.SPACE] HTTP {resp.status_code}: {resp.text[:200]}")
                     return ""
                 
-                # Parse JSON response
-                try:
-                    data = resp.json()
-                except Exception as e:
-                    print(f"[OCR.SPACE] Failed to parse JSON response: {e}")
-                    return ""
+                data = resp.json()
                 
-                # Check for API-level errors
                 if data.get("IsErroredOnProcessing"):
-                    error_msg = data.get('ErrorMessage', 'Unknown error')
-                    print(f"[OCR.SPACE] API Error: {error_msg}")
+                    print(f"[OCR.SPACE] API Error: {data.get('ErrorMessage')}")
                     return ""
                 
-                # Extract parsed text
                 parsed_results = data.get("ParsedResults", [])
                 if not parsed_results:
-                    print(f"[OCR.SPACE] No ParsedResults in response")
                     return ""
                 
                 parsed_text = parsed_results[0].get("ParsedText", "")
                 if not parsed_text or len(parsed_text.strip()) < 20:
-                    print(f"[OCR.SPACE] Returned text too short ({len(parsed_text)} chars)")
                     return ""
                 
                 return parsed_text.strip()
             
         except Exception as e:
             print(f"[OCR.SPACE] Exception: {e}")
-            import traceback
-            print(f"[OCR.SPACE] Traceback: {traceback.format_exc()[:300]}")
             return ""
 
-    async def _summarize_with_ocr(self, minutes, image_fetcher=None):
-        """Primary OCR path: OCR.space (free) -> fallback to text mode."""
-        has_urls = minutes.page_image_urls and isinstance(minutes.page_image_urls[0], str)
+    async def _ocr_all_pages(self, image_bytes_list: list[bytes]) -> list[tuple[int, str]]:
+        """Run all OCR engines on all pages and return best results.
+        
+        For each page, tries: OCR.space -> EasyOCR -> Tesseract
+        Returns list of (page_number, text) tuples.
+        """
+        results = []
+        
+        for i, img_bytes in enumerate(image_bytes_list):
+            page_num = i + 1
+            page_text = ""
+            
+            # Try OCR.space first (best quality for scanned docs)
+            print(f"[OCR] Page {page_num}: Trying OCR.space...")
+            page_text = await self._ocr_with_ocrspace(img_bytes)
+            
+            # Fallback to EasyOCR
+            if not page_text and self._easyocr_available:
+                print(f"[OCR] Page {page_num}: OCR.space failed, trying EasyOCR...")
+                page_text = await self._ocr_with_easyocr(img_bytes)
+            
+            # Fallback to Tesseract
+            if not page_text and self._pytesseract_available:
+                print(f"[OCR] Page {page_num}: EasyOCR failed, trying Tesseract...")
+                page_text = await self._ocr_with_tesseract(img_bytes)
+            
+            if page_text and len(page_text.strip()) > 20:
+                results.append((page_num, page_text.strip()))
+                print(f"[OCR] Page {page_num}: {len(page_text.strip())} chars extracted")
+            else:
+                print(f"[OCR] Page {page_num}: No text extracted by any OCR engine")
+        
+        return results
 
+    async def _summarize_with_ocr(self, minutes, image_fetcher=None):
+        """Three-tier OCR pipeline: 
+        1. Try PDF text extraction (fastest, works on digital PDFs)
+        2. Multi-engine OCR on all pages (OCR.space -> EasyOCR -> Tesseract)
+        3. Fallback to text mode with page URLs
+        """
+        has_urls = minutes.page_image_urls and isinstance(minutes.page_image_urls[0], str)
+        
+        # --- TIER 1: Try direct PDF text extraction ---
+        # If page_image_urls point to PDFs, try extracting text directly
+        if has_urls:
+            pdf_urls = [u for u in minutes.page_image_urls if u.lower().endswith('.pdf') or '.pdf?' in u.lower()]
+            if pdf_urls and image_fetcher:
+                try:
+                    # image_fetcher may download PDFs and render them as images
+                    # For PDFs, try direct text extraction first
+                    import httpx
+                    async with httpx.AsyncClient(timeout=30.0) as client:
+                        for pdf_url in pdf_urls[:3]:  # Try first 3 PDF URLs
+                            try:
+                                resp = await client.get(pdf_url, follow_redirects=True)
+                                if resp.status_code == 200 and resp.content[:4] == b'%PDF':
+                                    pdf_text = await self._extract_text_from_pdf_bytes(resp.content)
+                                    if pdf_text:
+                                        print(f"[OCR] Extracted text directly from PDF ({len(pdf_text)} chars)")
+                                        minutes.raw_text = pdf_text
+                                        return await self._summarize_with_text(minutes)
+                            except Exception:
+                                continue
+                except Exception:
+                    pass
+
+        # --- Get page images for OCR ---
         image_bytes_list = []
         if has_urls and image_fetcher:
             try:
@@ -477,87 +629,95 @@ class LLMSummarizer:
             print("[OCR] No images, falling back to text mode")
             return await self._summarize_with_text(minutes)
 
-        # Use free OCR.space API — only 1 page to stay within Vercel free plan 10s limit
-        print("[OCR] Extracting text via free OCR.space API (1 page)...")
-        ocr_parts = []
-        for i, img_bytes in enumerate(image_bytes_list[:1]):
-            page_text = await self._ocr_with_ocrspace(img_bytes)
-            if page_text and len(page_text.strip()) > 20:
-                ocr_parts.append(f"--- Page {i + 1} ---\n{page_text.strip()}")
-                print(f"[OCR] Page {i + 1}: {len(page_text.strip())} chars")
-            else:
-                print(f"[OCR] Page {i + 1}: OCR.space returned no text")
+        # --- TIER 2: OCR all pages with all engines ---
+        print(f"[OCR] Processing {len(image_bytes_list)} pages with OCR pipeline...")
+        ocr_results = await self._ocr_all_pages(image_bytes_list)
 
-        if ocr_parts:
+        if ocr_results:
+            # Build full text from all pages
+            ocr_parts = [f"--- Page {p[0]} ---\n{p[1]}" for p in ocr_results]
             full_text = "\n\n".join(ocr_parts)
             minutes.raw_text = full_text
-            print(f"[OCR] Total: {len(full_text)} chars from OCR.space")
-
-            user_content = (
-                f"Please summarize the following city council meeting minutes "
-                f"for {minutes.city}, {minutes.state} on "
-                f"{minutes.meeting_date.strftime('%B %d, %Y')}.\n\n"
-                f"Meeting Type: {minutes.meeting_type}\n"
-                f"Title: {minutes.title}\n\n"
-                f"The following text was extracted from scanned document images:\n\n"
-                f"{full_text[:self.MAX_OCR_TEXT_CHARS]}\n\n"
-                f"Return ONLY valid JSON matching the specified structure. "
-                f"Do not include any text outside the JSON object."
-            )
-
-            raw_content = await self._call_groq(
-                MINUTES_SYSTEM_PROMPT + "\n\nIMPORTANT: Return ONLY valid JSON. Do not include any text outside the JSON object.",
-                user_content,
-                max_tokens=4096,
-            )
-            if raw_content is None:
-                print(f"[OCR] Groq API call failed")
-                return self._build_unreadable_response(minutes, reason="groq-api-failed")
-
-            print(f"[GROQ] Raw response length: {len(raw_content)}")
+            print(f"[OCR] Total: {len(full_text)} chars from {len(ocr_results)} pages")
             
-            # Extract JSON from response, handling code blocks
-            json_content = raw_content.strip()
-            if "```json" in json_content:
-                try:
-                    json_content = json_content.split("```json")[1].split("```")[0].strip()
-                except IndexError:
-                    print(f"[GROQ] Failed to extract JSON from ```json``` block")
-                    pass
-            elif "```" in json_content:
-                try:
-                    json_content = json_content.split("```")[1].split("```")[0].strip()
-                except IndexError:
-                    print(f"[GROQ] Failed to extract JSON from ``` block")
-                    pass
-            
-            # Try to parse JSON
-            try:
-                result = json.loads(json_content)
-                if not isinstance(result, dict):
-                    print(f"[GROQ] JSON root is not dict: {type(result)}")
-                    return self._build_unreadable_response(minutes, reason="groq-invalid-structure")
-            except json.JSONDecodeError as e:
-                print(f"[GROQ] JSON parse error at position {e.pos}: {e.msg}")
-                print(f"[GROQ] Raw response (first 500 chars): {raw_content[:500]}")
-                return self._build_unreadable_response(minutes, reason="groq-json-parse-error")
-
-            return SummaryResponse(
-                minutes_id=minutes.id,
-                meeting_date=minutes.meeting_date,
-                meeting_type=minutes.meeting_type,
-                big_picture=result.get("big_picture", ""),
-                summary=result.get("summary", "No summary available."),
-                key_decisions=[d if isinstance(d, dict) else {"description": d} for d in result.get("key_decisions", [])],
-                budget_items=[d if isinstance(d, dict) else {"description": d} for d in result.get("budget_items", [])],
-                public_comment_opportunities=[d if isinstance(d, dict) else {"description": d} for d in result.get("public_comment_opportunities", [])],
-                items=[d if isinstance(d, dict) else {"description": d} for d in result.get("items", [])],
-                what_you_can_do=[d if isinstance(d, dict) else {"description": d} for d in result.get("what_you_can_do", [])],
-            )
+            # Check if we got meaningful text
+            meaningful = self._count_meaningful_chars(full_text)
+            if meaningful > 200:
+                return await self._call_groq_and_parse(minutes, full_text)
+            else:
+                print(f"[OCR] Only {meaningful} meaningful chars - text may be garbled")
+                return await self._summarize_with_text(minutes)
 
         # Last resort: text mode
         print("[OCR] All OCR methods failed, falling back to text mode")
         return await self._summarize_with_text(minutes)
+
+    def _count_meaningful_chars(self, text: str) -> int:
+        """Count characters that are actual words (not just symbols/garbage)."""
+        words = text.split()
+        meaningful = sum(len(w) for w in words if any(c.isalpha() for c in w))
+        return meaningful
+
+    async def _call_groq_and_parse(self, minutes, full_text):
+        """Call Groq API with extracted text and parse the JSON response."""
+        user_content = (
+            f"Please summarize the following city council meeting minutes "
+            f"for {minutes.city}, {minutes.state} on "
+            f"{minutes.meeting_date.strftime('%B %d, %Y')}.\n\n"
+            f"Meeting Type: {minutes.meeting_type}\n"
+            f"Title: {minutes.title}\n\n"
+            f"The following text was extracted from scanned document images:\n\n"
+            f"{full_text[:self.MAX_OCR_TEXT_CHARS]}\n\n"
+            f"Return ONLY valid JSON matching the specified structure. "
+            f"Do not include any text outside the JSON object."
+        )
+
+        raw_content = await self._call_groq(
+            MINUTES_SYSTEM_PROMPT + "\n\nIMPORTANT: Return ONLY valid JSON. Do not include any text outside the JSON object.",
+            user_content,
+            max_tokens=4096,
+        )
+        if raw_content is None:
+            print(f"[OCR] Groq API call failed")
+            return self._build_unreadable_response(minutes, reason="groq-api-failed")
+
+        print(f"[GROQ] Raw response length: {len(raw_content)}")
+        
+        # Extract JSON from response, handling code blocks
+        json_content = raw_content.strip()
+        if "```json" in json_content:
+            try:
+                json_content = json_content.split("```json")[1].split("```")[0].strip()
+            except IndexError:
+                pass
+        elif "```" in json_content:
+            try:
+                json_content = json_content.split("```")[1].split("```")[0].strip()
+            except IndexError:
+                pass
+        
+        try:
+            result = json.loads(json_content)
+            if not isinstance(result, dict):
+                print(f"[GROQ] JSON root is not dict: {type(result)}")
+                return self._build_unreadable_response(minutes, reason="groq-invalid-structure")
+        except json.JSONDecodeError as e:
+            print(f"[GROQ] JSON parse error at position {e.pos}: {e.msg}")
+            print(f"[GROQ] Raw response (first 500 chars): {raw_content[:500]}")
+            return self._build_unreadable_response(minutes, reason="groq-json-parse-error")
+
+        return SummaryResponse(
+            minutes_id=minutes.id,
+            meeting_date=minutes.meeting_date,
+            meeting_type=minutes.meeting_type,
+            big_picture=result.get("big_picture", ""),
+            summary=result.get("summary", "No summary available."),
+            key_decisions=[d if isinstance(d, dict) else {"description": d} for d in result.get("key_decisions", [])],
+            budget_items=[d if isinstance(d, dict) else {"description": d} for d in result.get("budget_items", [])],
+            public_comment_opportunities=[d if isinstance(d, dict) else {"description": d} for d in result.get("public_comment_opportunities", [])],
+            items=[d if isinstance(d, dict) else {"description": d} for d in result.get("items", [])],
+            what_you_can_do=[d if isinstance(d, dict) else {"description": d} for d in result.get("what_you_can_do", [])],
+        )
 
     async def _summarize_with_text(self, minutes):
         """Summarize using Groq text model via direct httpx."""
@@ -595,13 +755,11 @@ class LLMSummarizer:
             try:
                 json_content = json_content.split("```json")[1].split("```")[0].strip()
             except IndexError:
-                print(f"[TEXT] Failed to extract JSON from ```json``` block")
                 pass
         elif "```" in json_content:
             try:
                 json_content = json_content.split("```")[1].split("```")[0].strip()
             except IndexError:
-                print(f"[TEXT] Failed to extract JSON from ``` block")
                 pass
         
         try:
