@@ -48,8 +48,6 @@ else:
 DB_PATH = DB_DIR / "opencouncil.db"
 
 if USE_POSTGRES:
-    import psycopg2
-    import psycopg2.extras
     from urllib.parse import urlparse, unquote
 
     def _get_pg_conn():
@@ -58,6 +56,8 @@ if USE_POSTGRES:
         Parses DATABASE_URL manually to handle special characters in passwords
         (e.g. Supabase Transaction Pooler connection strings with `]`, `@`, etc.).
         """
+        import psycopg2
+        import psycopg2.extras
         raw_url = os.environ["DATABASE_URL"]
         parsed = urlparse(raw_url)
 
