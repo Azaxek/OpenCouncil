@@ -11,11 +11,13 @@ function getBackendUrl(): string {
   if (process.env.NEXT_PUBLIC_API_URL) {
     return process.env.NEXT_PUBLIC_API_URL.trim();
   }
-  // On Vercel with experimentalServices, backend is at /_/backend
   if (process.env.VERCEL) {
-    return "/_/backend";
+    const vercelUrl = process.env.VERCEL_URL || process.env.VERCEL_BRANCH_URL;
+    if (vercelUrl) {
+      const protocol = process.env.VERCEL_ENV === "production" ? "https" : "https";
+      return `${protocol}://${vercelUrl}/_/backend`;
+    }
   }
-  // Local dev
   return "http://localhost:8000";
 }
 
@@ -35,6 +37,7 @@ export async function GET(_request: NextRequest) {
     return NextResponse.json(
       {
         detail: `Backend unavailable. ${error instanceof Error ? error.message : "Unknown error"}`,
+        backendUrl,
       },
       { status: 503 }
     );
