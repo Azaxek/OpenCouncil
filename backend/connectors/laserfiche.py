@@ -374,18 +374,46 @@ class LaserficheConnector:
 
         return minutes_list[:limit]
 
+    async def _ocr_single_page(self, img_bytes: bytes) -> str:
+        """Extract text from a single page image using free OCR.space API."""
+        import base64
+        img_b64 = base64.b64encode(img_bytes).decode("utf-8")
+        try:
+            resp = await self.client.post(
+                "https://api.ocr.space/parse/image",
+                data={
+                    "base64Image": f"data:image/png;base64,{img_b64}",
+                    "language": "eng",
+                    "isOverlayRequired": False,
+                    "OCREngine": 2,
+                },
+                headers={"apikey": "helloworld"},
+                timeout=30.0,
+            )
+            if resp.status_code == 200:
+                data = resp.json()
+                if data.get("IsErroredOnProcessing"):
+                    print(f"[OCR.SPACE] Error: {data.get('ErrorMessage')}")
+                    return ""
+                parsed = data.get("ParsedResults", [])
+                if parsed:
+                    return parsed[0].get("ParsedText", "")
+        except Exception as e:
+            print(f"[OCR.SPACE] Failed: {e}")
+        return ""
+
     async def fetch_document_text(self, document_url: str) -> Optional[str]:
-        """Attempt to extract text from a Laserfiche document.
+        """Extract text from a Laserfiche document using free OCR.space.
 
-        NOTE: Laserfiche stores documents as scanned images (TIFF).
-        The docview.aspx returns an HTML viewer page with page image
-        URLs embedded in the toolbar navigation.
+        Laserfiche stores documents as scanned images (TIFF).
+        This method:
+        1. Fetches the HTML viewer to extract page image URLs
+        2. Downloads the first page image
+        3. Runs free OCR.space API to extract text
+        4. Returns the OCR'd text (not image URLs)
 
-        This method extracts the page image URLs from the viewer HTML
-        and returns them as a structured text block that the LLM
-        summarizer can use with GPT-4o Vision to read the scanned images.
-
-        Returns a structured text block with page image URLs.
+        If OCR fails, falls back to returning page image URLs for
+        alternative OCR processing.
         """
         if not document_url:
             return None
@@ -400,10 +428,24 @@ class LaserficheConnector:
             html = response.text
 
             # Extract page image URLs from the toolbar navigation links
-            # Pattern: /WebLink/0/doc/{docId}/Page{pageNum}.aspx
             page_urls = self._extract_page_image_urls(html, document_url)
 
             if page_urls:
+                # Download first page image and try OCR.space
+                first_page_url = page_urls[0]
+                try:
+                    img_resp = await self._make_request("GET", first_page_url, timeout=30.0)
+                    img_resp.raise_for_status()
+                    img_bytes = img_resp.content
+                    if img_bytes and len(img_bytes) > 1000:
+                        ocr_text = await self._ocr_single_page(img_bytes)
+                        if ocr_text and len(ocr_text.strip()) > 50:
+                            print(f"[OCR.SPACE] Extracted {len(ocr_text)} chars from document")
+                            return ocr_text.strip()
+                except Exception as e:
+                    print(f"[LASERFICHE] Image download/OCR failed: {e}")
+
+                # Fallback: return the page image URLs
                 lines = [
                     "[This document is a scanned image. "
                     "Page images are available at the following URLs:]"
