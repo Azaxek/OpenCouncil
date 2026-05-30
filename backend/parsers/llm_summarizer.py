@@ -282,6 +282,16 @@ class LLMSummarizer:
             return None
 
     async def summarize_minutes(self, minutes, image_fetcher=None):
+        # Prefer text mode when raw_text has meaningful content (much faster - avoids OCR)
+        has_text = minutes.raw_text and len(minutes.raw_text.strip()) > 100
+        if has_text:
+            stub_patterns = ["this document is a scanned image", "page images are available at the following urls", "no detailed minutes text available"]
+            is_stub = any(p in minutes.raw_text.lower() for p in stub_patterns)
+            if not is_stub:
+                print(f"[OCR] Skipping OCR - using existing raw_text ({len(minutes.raw_text)} chars)")
+                return await self._summarize_with_text(minutes)
+
+        # No text available, try OCR on images
         ocr_capable = self._easyocr_available or self._pytesseract_available or self._pillow_available
         if minutes.page_image_urls:
             if ocr_capable:
