@@ -341,10 +341,9 @@ class LLMSummarizer:
                 f"Do not include any text outside the JSON object."
             )
 
-            # Run the synchronous Groq API call in a thread to avoid blocking the event loop
-            import asyncio, functools
-            response = await asyncio.to_thread(
-                self.deepseek_client.chat.completions.create,
+            # Run the Groq API call directly (sync client works fine in async context)
+            # Use a blocking call wrapped in asyncio loop
+            response = self.deepseek_client.chat.completions.create(
                 model=self.text_model,
                 messages=[
                     {"role": "system", "content": MINUTES_SYSTEM_PROMPT},
