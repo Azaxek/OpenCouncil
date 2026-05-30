@@ -14,7 +14,8 @@ openai>=1.0.0
 cryptography>=42.0.0
 
 # Database — PostgreSQL for Vercel, SQLite for local
-psycopg2-binary>=2.9.0
+# Pure-Python driver (no native deps) for Lambda compatibility
+pg8000>=1.30.0
 
 # Vercel serverless adapter
 mangum>=0.17.0

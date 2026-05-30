@@ -1,42 +1,53 @@
 """
 Minimal Vercel serverless entry point for OpenCouncil backend.
 
-Use a raw WSGI handler so FastAPI/Mangum imports happen lazily on first request,
-avoiding cold-start crashes from missing or incompatible dependencies.
+Uses Mangum to wrap FastAPI. If imports fail, returns a JSON error response.
 """
 
+import json
 import os
 import sys
 from pathlib import Path
-from typing import Any
 
 # Signal to storage.py that we're on Vercel (use /tmp for SQLite)
 os.environ["VERCEL"] = "1"
 
-# Ensure the backend root is on sys.path so all imports resolve
+# Ensure the backend root is on sys.path
 _backend_root = Path(__file__).parent.parent
 if str(_backend_root) not in sys.path:
     sys.path.insert(0, str(_backend_root))
 
-# Change working directory to backend root so relative paths work
+# Change working directory to backend root
 os.chdir(str(_backend_root))
 
-# Lazy-loaded WSGI handler
-_handler: Any = None
+_app = None
 
-def _get_handler():
-    """Import FastAPI app and Mangum adapter lazily on first request."""
-    global _handler
-    if _handler is not None:
-        return _handler
+def _get_app():
+    global _app
+    if _app is not None:
+        return _app
 
-    from mangum import Mangum
-    from api.server import app as fastapi_app
-    _handler = Mangum(fastapi_app, lifespan="off")
-    return _handler
+    try:
+        from mangum import Mangum
+        from api.server import app as fastapi_app
+        _app = Mangum(fastapi_app, lifespan="off")
+        return _app
+    except Exception as e:
+        import traceback
+        # Return a simple WSGI app that shows the error
+        error_msg = json.dumps({
+            "error": f"Backend initialization failed: {str(e)}",
+            "traceback": traceback.format_exc(),
+        })
+        def error_app(environ, start_response):
+            start_response("500 Internal Server Error", [
+                ("Content-Type", "application/json"),
+                ("Content-Length", str(len(error_msg))),
+            ])
+            return [error_msg.encode()]
+        _app = error_app
+        return _app
 
-# Vercel expects `app` to be a WSGI callable — make it a function
-# that lazy-imports on first invocation
-def app(environ: dict, start_response) -> list[bytes]:
-    handler = _get_handler()
+def app(environ, start_response):
+    handler = _get_app()
     return handler(environ, start_response)

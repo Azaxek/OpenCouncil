@@ -51,34 +51,29 @@ if USE_POSTGRES:
     from urllib.parse import urlparse, unquote
 
     def _get_pg_conn():
-        """Get a PostgreSQL connection.
+        """Get a PostgreSQL connection using pg8000 (pure Python driver).
 
-        Parses DATABASE_URL manually to handle special characters in passwords
-        (e.g. Supabase Transaction Pooler connection strings with `]`, `@`, etc.).
+        Parses DATABASE_URL manually to handle special characters in passwords.
         """
-        import psycopg2
-        import psycopg2.extras
+        import pg8000
         raw_url = os.environ["DATABASE_URL"]
         parsed = urlparse(raw_url)
 
-        # Build kwargs from parsed URL — this avoids psycopg2's own URL parser
-        # which can choke on special characters in the password.
         kwargs = {
             "host": parsed.hostname,
             "port": parsed.port or 6543,
-            "dbname": parsed.path.lstrip("/"),
+            "database": parsed.path.lstrip("/"),
             "user": parsed.username,
             "password": unquote(parsed.password) if parsed.password else "",
         }
 
-        # Handle SSL mode from query params if present (e.g. ?sslmode=require)
+        # Handle SSL from query params (e.g. ?sslmode=require)
         if parsed.query:
             qs = dict(q.split("=", 1) for q in parsed.query.split("&") if "=" in q)
-            sslmode = qs.get("sslmode")
-            if sslmode:
-                kwargs["sslmode"] = sslmode
+            if qs.get("sslmode") in ("require", "verify-full", "verify-ca"):
+                kwargs["ssl_context"] = True
 
-        conn = psycopg2.connect(**kwargs)
+        conn = pg8000.connect(**kwargs)
         conn.autocommit = False
         return conn
 
@@ -450,7 +445,7 @@ def _get_minutes_pg(minutes_id: str) -> Optional[Minutes]:
 
     conn = _get_pg_conn()
     try:
-        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        with conn.cursor(cursor_factory=pg8000.dbapi.PgCursor) as cur:
             cur.execute(
                 "SELECT * FROM minutes WHERE id = %s", (minutes_id,)
             )
@@ -518,7 +513,7 @@ def _list_minutes_pg(limit: int = 10) -> list[dict]:
     """List minutes from PostgreSQL."""
     conn = _get_pg_conn()
     try:
-        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        with conn.cursor(cursor_factory=pg8000.dbapi.PgCursor) as cur:
             cur.execute(
                 """SELECT id, city, state, meeting_date, meeting_type, title, url,
                           document_url, source
@@ -669,7 +664,7 @@ def _get_minutes_summary_pg(minutes_id: str) -> Optional[SummaryResponse]:
 
     conn = _get_pg_conn()
     try:
-        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        with conn.cursor(cursor_factory=pg8000.dbapi.PgCursor) as cur:
             cur.execute(
                 "SELECT * FROM minutes_summaries WHERE minutes_id = %s", (minutes_id,)
             )
@@ -816,7 +811,7 @@ def _save_summary_sqlite(summary: Summary) -> str:
 def _save_summary_pg(summary: Summary) -> str:
     conn = _get_pg_conn()
     try:
-        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        with conn.cursor(cursor_factory=pg8000.dbapi.PgCursor) as cur:
             cur.execute(
                 """INSERT INTO summaries
                    (minutes_id, summary, key_decisions, budget_items,
@@ -904,7 +899,7 @@ def _get_summary_sqlite(summary_id: str) -> Optional[Summary]:
 def _get_summary_pg(summary_id: str) -> Optional[Summary]:
     conn = _get_pg_conn()
     try:
-        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        with conn.cursor(cursor_factory=pg8000.dbapi.PgCursor) as cur:
             cur.execute(
                 "SELECT * FROM summaries WHERE id = %s", (summary_id,)
             )
@@ -955,7 +950,7 @@ def _list_pending_summaries_sqlite() -> list[dict]:
 def _list_pending_summaries_pg() -> list[dict]:
     conn = _get_pg_conn()
     try:
-        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        with conn.cursor(cursor_factory=pg8000.dbapi.PgCursor) as cur:
             cur.execute(
                 """SELECT s.id, s.summary, s.category, s.neighborhood_impact,
                           s.status, s.created_at,
@@ -1199,7 +1194,7 @@ def _get_volunteer_sqlite(user_id: str) -> Optional[Volunteer]:
 def _get_volunteer_pg(user_id: str) -> Optional[Volunteer]:
     conn = _get_pg_conn()
     try:
-        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        with conn.cursor(cursor_factory=pg8000.dbapi.PgCursor) as cur:
             cur.execute(
                 "SELECT * FROM volunteers WHERE user_id = %s", (user_id,)
             )
@@ -1249,7 +1244,7 @@ def _get_volunteer_by_email_sqlite(email: str) -> Optional[Volunteer]:
 def _get_volunteer_by_email_pg(email: str) -> Optional[Volunteer]:
     conn = _get_pg_conn()
     try:
-        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        with conn.cursor(cursor_factory=pg8000.dbapi.PgCursor) as cur:
             cur.execute(
                 "SELECT * FROM volunteers WHERE email = %s", (email,)
             )
@@ -1329,7 +1324,7 @@ def _create_verification_session_sqlite(volunteer_id: str, summary_id: str) -> s
 def _create_verification_session_pg(volunteer_id: str, summary_id: str) -> str:
     conn = _get_pg_conn()
     try:
-        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        with conn.cursor(cursor_factory=pg8000.dbapi.PgCursor) as cur:
             cur.execute(
                 """INSERT INTO verification_sessions
                    (volunteer_id, summary_id)
@@ -1443,7 +1438,7 @@ def _get_volunteer_sessions_sqlite(user_id: str) -> list[dict]:
 def _get_volunteer_sessions_pg(user_id: str) -> list[dict]:
     conn = _get_pg_conn()
     try:
-        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        with conn.cursor(cursor_factory=pg8000.dbapi.PgCursor) as cur:
             cur.execute(
                 """SELECT vs.id, vs.started_at, vs.ended_at, vs.duration_seconds,
                           vs.action, vs.notes,
@@ -1564,7 +1559,7 @@ def _backfill_summaries_sqlite() -> dict:
 def _backfill_summaries_pg() -> dict:
     conn = _get_pg_conn()
     try:
-        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        with conn.cursor(cursor_factory=pg8000.dbapi.PgCursor) as cur:
             cur.execute(
                 """SELECT ms.*, m.raw_text
                    FROM minutes_summaries ms
