@@ -343,10 +343,10 @@ class LLMSummarizer:
             print("[OCR] No images, falling back to text mode")
             return await self._summarize_with_text(minutes)
 
-        # Use free OCR.space API to extract text from scanned images.
-        print("[OCR] Extracting text via free OCR.space API...")
+        # Use free OCR.space API — only 1 page to stay within Vercel free plan 10s limit
+        print("[OCR] Extracting text via free OCR.space API (1 page)...")
         ocr_parts = []
-        for i, img_bytes in enumerate(image_bytes_list[:5]):
+        for i, img_bytes in enumerate(image_bytes_list[:1]):
             page_text = self._ocr_with_ocrspace(img_bytes)
             if page_text and len(page_text.strip()) > 20:
                 ocr_parts.append(f"--- Page {i + 1} ---\n{page_text.strip()}")
