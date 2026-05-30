@@ -15,3 +15,7 @@ mangum>=0.17.0
 
 # Pure-Python PostgreSQL driver (no native extensions)
 pg8000>=1.30.0
+
+# Image processing for social card generation (pure Python wheels available)
+Pillow>=10.0.0
+numpy>=1.24.0
