@@ -7,22 +7,19 @@
  */
 import { NextRequest, NextResponse } from "next/server";
 
-function getBackendUrl(): string {
+function getBackendUrl(request: NextRequest): string {
   if (process.env.NEXT_PUBLIC_API_URL) {
     return process.env.NEXT_PUBLIC_API_URL.trim();
   }
   if (process.env.VERCEL) {
-    const vercelUrl = process.env.VERCEL_URL || process.env.VERCEL_BRANCH_URL;
-    if (vercelUrl) {
-      const protocol = process.env.VERCEL_ENV === "production" ? "https" : "https";
-      return `${protocol}://${vercelUrl}/_/backend`;
-    }
+    const origin = new URL(request.url).origin;
+    return `${origin}/_/backend`;
   }
   return "http://localhost:8000";
 }
 
-export async function GET(_request: NextRequest) {
-  const backendUrl = getBackendUrl();
+export async function GET(request: NextRequest) {
+  const backendUrl = getBackendUrl(request);
 
   try {
     const response = await fetch(`${backendUrl}/health`, {
