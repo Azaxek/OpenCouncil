@@ -1,8 +1,11 @@
 """
 LLM-powered summarization pipeline for OpenCouncil.
-... (full file content follows)
+Uses Groq API (OpenAI-compatible) for free LLM inference.
+OCR.space (free, no API key) for scanning documents.
 """
 
+import asyncio
+import base64
 import io
 import json
 import os
@@ -264,7 +267,6 @@ class LLMSummarizer:
 
     def _ocr_with_ocrspace(self, image_bytes):
         """Free OCR.space API — no API key needed, 25k requests/month."""
-        import base64
         import httpx
         img_b64 = base64.b64encode(image_bytes).decode("utf-8")
         try:
@@ -292,7 +294,7 @@ class LLMSummarizer:
         return ""
 
     async def _summarize_with_ocr(self, minutes, image_fetcher=None):
-        """Primary OCR path: OCR.space (free) -> EasyOCR -> Tesseract -> Vision -> Text fallback"""
+        """Primary OCR path: OCR.space (free) -> fallback to text mode."""
         has_urls = minutes.page_image_urls and isinstance(minutes.page_image_urls[0], str)
 
         image_bytes_list = []
@@ -313,7 +315,6 @@ class LLMSummarizer:
 
         # Use free OCR.space API to extract text from scanned images.
         # Works on Vercel Lambda with no local binaries needed.
-        # Rate limit: 25k requests/month free tier, no API key required.
         print("[OCR] Extracting text via free OCR.space API...")
         ocr_parts = []
         for i, img_bytes in enumerate(image_bytes_list[:5]):
@@ -345,16 +346,25 @@ class LLMSummarizer:
                 response = await self.deepseek_client.chat.completions.create(
                     model=self.text_model,
                     messages=[
-                        {"role": "system", "content": MINUTES_SYSTEM_PROMPT},
+                        {"role": "system", "content": MINUTES_SYSTEM_PROMPT + "\n\nIMPORTANT: Return ONLY valid JSON. Do not include any text outside the JSON object."},
                         {"role": "user", "content": user_content},
                     ],
                     temperature=0.0,
                     max_tokens=4096,
-                    response_format={"type": "json_object"},
                 )
-                result = json.loads(response.choices[0].message.content)
+                raw_content = response.choices[0].message.content
+                print(f"[GROQ] Raw response length: {len(raw_content)}")
+                # Strip code blocks if present
+                if "```json" in raw_content:
+                    raw_content = raw_content.split("```json")[1].split("```")[0].strip()
+                elif "```" in raw_content:
+                    raw_content = raw_content.split("```")[1].split("```")[0].strip()
+                result = json.loads(raw_content)
+            except json.JSONDecodeError as e:
+                print(f"[GROQ] JSON parse error: {e}, raw: {raw_content[:300]}")
+                return self._build_unreadable_response(minutes, reason=f"groq-json-parse-error")
             except Exception as e:
-                print(f"[GROQ] API call failed: {e}")
+                print(f"[GROQ] API call failed: {type(e).__name__}: {e}")
                 return self._build_unreadable_response(minutes, reason=f"groq-api-failed")
             return SummaryResponse(
                 minutes_id=minutes.id,
@@ -394,6 +404,7 @@ class LLMSummarizer:
             f"Do not include any text outside the JSON object."
         )
 
+        # Use AsyncOpenAI client — truly async, no event loop blocking
         response = await self.deepseek_client.chat.completions.create(
             model=self.text_model,
             messages=[{"role": "system", "content": MINUTES_SYSTEM_PROMPT}, {"role": "user", "content": user_content}],
