@@ -16,6 +16,9 @@ mangum>=0.17.0
 # Pure-Python PostgreSQL driver (no native extensions)
 pg8000>=1.30.0
 
+# HTTP client for OCR.space free OCR API
+httpx>=0.27.0
+
 # Encryption for API keys
 cryptography>=42.0.0
 

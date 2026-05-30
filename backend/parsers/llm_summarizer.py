@@ -780,6 +780,46 @@ class LLMSummarizer:
 
         raise RuntimeError("No LLM client available for summarization.")
 
+    async def _ocr_with_ocrspace(self, image_bytes: bytes) -> str:
+        """Run OCR using OCR.space — completely free, no API key needed.
+        
+        OCR.space is a free online OCR service with up to 25,000 requests/month
+        on the free tier. No registration required for basic usage.
+        
+        Args:
+            image_bytes: PNG/JPEG bytes of the page image.
+            
+        Returns:
+            Extracted text string, or empty string on failure.
+        """
+        import base64, httpx
+        
+        img_b64 = base64.b64encode(image_bytes).decode("utf-8")
+        
+        try:
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                resp = await client.post(
+                    "https://api.ocr.space/parse/image",
+                    data={
+                        "base64Image": f"data:image/png;base64,{img_b64}",
+                        "language": "eng",
+                        "isOverlayRequired": False,
+                        "OCREngine": 2,  # Engine 2 = best accuracy
+                    },
+                    headers={"apikey": "helloworld"},  # Free API key
+                )
+                if resp.status_code == 200:
+                    data = resp.json()
+                    if data.get("IsErroredOnProcessing"):
+                        print(f"[OCR.SPACE] Error: {data.get('ErrorMessage')}")
+                        return ""
+                    parsed_results = data.get("ParsedResults", [])
+                    if parsed_results:
+                        return parsed_results[0].get("ParsedText", "")
+        except Exception as e:
+            print(f"[OCR.SPACE] Failed: {e}")
+        return ""
+
     async def _summarize_with_llm_vision(
         self,
         minutes: Minutes,
@@ -788,58 +828,99 @@ class LLMSummarizer:
         """Summarize minutes by sending page images directly to Groq's vision API.
 
         On Vercel Lambda, local OCR engines (EasyOCR, Tesseract) are not available.
-        Groq's Llama 3.2 11B Vision model can read text from images directly,
-        bypassing the need for local OCR entirely.
+        Groq's Llama 3.2 11B Vision model can read text from images directly.
+
+        IMPORTANT: Vision models don't support response_format=json_object.
+        We use the raw text model for JSON + image context separately.
 
         Args:
             minutes: The minutes document to summarize.
             image_bytes_list: List of PNG/JPEG bytes for each page image.
 
         Returns:
-            SummaryResponse with AI-generated summary.
+            SummaryResponse with AI-generated summary, or None on failure.
         """
         import base64
 
-        # Build content with images (first 5 pages to stay within rate limits)
-        max_pages = min(len(image_bytes_list), 5)
-        content_parts = [
+        # Limit to first 3 pages to avoid hitting size limits
+        max_pages = min(len(image_bytes_list), 3)
+        
+        # Step 1: Use Vision model to extract text from images
+        vision_content = [
             {
                 "type": "text",
                 "text": (
-                    f"Please summarize the following city council meeting minutes "
-                    f"for {minutes.city}, {minutes.state} on "
-                    f"{minutes.meeting_date.strftime('%B %d, %Y')}.\n\n"
-                    f"Meeting Type: {minutes.meeting_type}\n"
-                    f"Title: {minutes.title}\n\n"
-                    f"These are scanned document pages (images). "
-                    f"Read the text from each image and summarize the meeting.\n\n"
-                    f"Return ONLY valid JSON matching the specified structure. "
-                    f"Do not include any text outside the JSON object."
+                    f"Extract ALL readable text from these scanned city council meeting pages. "
+                    f"Transcribe everything exactly as you see it — every word, number, and line. "
+                    f"Do NOT summarize, just extract the raw text. "
+                    f"Preserve the layout: list each line as it appears on the page."
                 ),
             }
         ]
 
         for i in range(max_pages):
             img_b64 = base64.b64encode(image_bytes_list[i]).decode("utf-8")
-            # Determine MIME type from first bytes (PNG header or JPEG header)
             if image_bytes_list[i][:4] == b'\x89PNG':
                 mime = "image/png"
             else:
                 mime = "image/jpeg"
-            content_parts.append({
+            vision_content.append({
                 "type": "image_url",
                 "image_url": {"url": f"data:{mime};base64,{img_b64}"},
             })
 
-        # Use Llama 3.2 11B Vision (supports image inputs)
+        try:
+            vision_response = self.deepseek_client.chat.completions.create(
+                model="llama-3.2-11b-vision-preview",
+                messages=[{"role": "user", "content": vision_content}],
+                temperature=0.0,
+                max_tokens=4096,
+            )
+            extracted_text = vision_response.choices[0].message.content or ""
+            print(f"[VISION] Extracted {len(extracted_text)} chars from {max_pages} page images")
+            print(f"[VISION] First 300 chars: {extracted_text[:300]}")
+        except Exception as e:
+            print(f"[VISION] Vision model failed: {e}")
+            extracted_text = ""
+
+        # If Vision extracted very little text, try OCR.space as free fallback
+        if len(extracted_text.strip()) < 100:
+            print("[VISION] Vision text limited, trying free OCR.space API...")
+            ocr_parts = []
+            for i, img_bytes in enumerate(image_bytes_list[:3]):
+                page_text = await self._ocr_with_ocrspace(img_bytes)
+                if page_text and len(page_text.strip()) > 50:
+                    ocr_parts.append(f"--- Page {i + 1} ---\n{page_text.strip()}")
+                    print(f"[OCR.SPACE] Page {i + 1}: {len(page_text.strip())} chars")
+            if ocr_parts:
+                extracted_text = "\n\n".join(ocr_parts)
+                print(f"[OCR.SPACE] Total: {len(extracted_text)} chars")
+
+        if not extracted_text.strip():
+            print("[VISION] No text could be extracted from images")
+            return None
+
+        # Step 2: Use text model to summarize (supports JSON mode)
+        user_content = (
+            f"Please summarize the following city council meeting minutes "
+            f"for {minutes.city}, {minutes.state} on "
+            f"{minutes.meeting_date.strftime('%B %d, %Y')}.\n\n"
+            f"Meeting Type: {minutes.meeting_type}\n"
+            f"Title: {minutes.title}\n\n"
+            f"The following text was extracted from scanned document images:\n\n"
+            f"{extracted_text[:30000]}\n\n"
+            f"Return ONLY valid JSON matching the specified structure. "
+            f"Do not include any text outside the JSON object."
+        )
+
         response = self.deepseek_client.chat.completions.create(
-            model="llama-3.2-11b-vision-preview",
+            model=self.text_model,
             messages=[
                 {"role": "system", "content": MINUTES_SYSTEM_PROMPT},
-                {"role": "user", "content": content_parts},
+                {"role": "user", "content": user_content},
             ],
             temperature=0.0,
-            max_tokens=8096,
+            max_tokens=4096,
             response_format={"type": "json_object"},
         )
 
@@ -852,9 +933,7 @@ class LLMSummarizer:
             return SummaryResponse(**data)
         except (json.JSONDecodeError, TypeError) as e:
             print(f"[VISION] Failed to parse LLM response: {e}")
-            return self._build_unreadable_response(
-                minutes, reason=f"vision-parse-failed"
-            )
+            return None
 
     async def _summarize_with_ocr(
         self,
