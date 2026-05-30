@@ -1,8 +1,8 @@
 """
 Vercel serverless entry point for OpenCouncil backend.
 
-This is the absolute minimal WSGI app required by Vercel Python runtime.
-Only imports modules inside the request handler to avoid Lambda startup crashes.
+Vercel's experimentalServices sends direct HTTP proxy requests to the Lambda.
+Mangum needs explicit handler type for this event format.
 """
 
 import sys
@@ -17,20 +17,20 @@ if str(_backend_root) not in sys.path:
 def app(env, start_response):
     """
     Vercel expects a WSGI callable named 'app'.
-    Import FastAPI/Mangum LAZILY on first request.
-    ANY import errors will crash Lambda on cold start.
+    Import FastAPI/Mangum lazily on first request.
     """
     try:
-        # Lazy imports - only run when this function is actually invoked
-        from mangum import Mangum
+        from mangum import Mangum, Handler
         from api.server import app as fastapi_app
-        # Create handler on first call
+        
+        # Create handler with explicit HTTP handler type
         handler = Mangum(fastapi_app, lifespan="off")
-        # Save it to module so subsequent calls reuse it
-        globals().setdefault('_handler', handler)
+        # Pre-register the HTTP handler to avoid inference
+        handler._handler = Handler.HTTP
+        
         return handler(env, start_response)
+        
     except ImportError as e:
-        # Even this fallback can fail if json import is problematic
         error_body = f"Backend initialization failed: {e}\n".encode()
         start_response('500 Internal Server Error', [
             ('Content-Type', 'text/plain'),
@@ -38,7 +38,6 @@ def app(env, start_response):
         ])
         return [error_body]
     except Exception as e:
-        # If this except block runs, the backend crashed but not during import
         import traceback
         tb = traceback.format_exc()
         body = f"Backend error:\n{tb}\n".encode()
