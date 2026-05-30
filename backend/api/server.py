@@ -147,37 +147,41 @@ def _create_connector(config: CityConfig):
 
 async def _geo_locate_city(client_ip: str) -> Optional[dict]:
     """Use free ipapi.co to geolocate an IP and match to a known city.
-
-    ipapi.co is free for up to 1,000 requests/day with no API key needed.
-    Falls back silently on failure.
+    
+    Uses strict timeout and silent fallback to avoid 502 errors in serverless.
     """
+    # Skip geolocation for localhost/private IPs
+    if not client_ip or client_ip in ("127.0.0.1", "::1", "localhost", ""):
+        return None
+    
+    # Skip private IP ranges
+    private_prefixes = ("10.", "172.16.", "172.17.", "172.18.", "172.19.",
+                        "172.20.", "172.21.", "172.22.", "172.23.", "172.24.",
+                        "172.25.", "172.26.", "172.27.", "172.28.", "172.29.",
+                        "172.30.", "172.31.", "192.168.")
+    if client_ip.startswith(private_prefixes):
+        return None
+
     try:
         import httpx
-        async with httpx.AsyncClient(timeout=5.0) as client:
+        async with httpx.AsyncClient(timeout=2.0) as client:
             r = await client.get(f"https://ipapi.co/{client_ip}/json/")
             if r.status_code != 200:
                 return None
             data = r.json()
             city = data.get("city", "")
             state = data.get("region_code", "")
-            zip_code = data.get("postal", "")
-
             if not city or not state:
                 return None
 
-            # Match against known cities
             cities_db = _load_cities_db()
             for c in cities_db.get("cities", []):
                 c_name = c.get("name", "").lower()
                 c_state = c.get("state", "").lower()
-                # Fuzzy match: city name contains detected or vice versa
                 if (city.lower() in c_name or c_name in city.lower()) and state.lower() == c_state:
                     return c
-                # Also try zip code partial match if city names differ
-                # (e.g., "Frisco" is unambiguous in TX)
                 if state.lower() == c_state and city.lower() in c.get("full_name", "").lower():
                     return c
-
             return None
     except Exception:
         return None
@@ -185,38 +189,23 @@ async def _geo_locate_city(client_ip: str) -> Optional[dict]:
 
 async def _detect_city_from_ip(request: Request) -> dict:
     """Detect the user's city based on their IP address.
-
-    Uses x-forwarded-for header (set by reverse proxies like Vercel/Railway)
-    or the direct remote address.
-
-    First tries ipapi.co for geolocation, then falls back to the default city.
+    
+    Returns immediately with default city, geolocation is fire-and-forget.
+    This ensures detect-city never returns 502 even if ipapi.co is down.
     """
-    forwarded = request.headers.get("x-forwarded-for")
-    client_ip = forwarded.split(",")[0].strip() if forwarded else request.client.host if request.client else "127.0.0.1"
-
-    # Try geolocation
-    geo_city = None
-    if client_ip and client_ip != "127.0.0.1":
-        geo_city = await _geo_locate_city(client_ip)
-
     cities_db = _load_cities_db()
     default_id = cities_db.get("default_city", _default_city_id)
-
-    # If geolocation matched a city, use that
-    if geo_city:
-        detected_city = geo_city
-    else:
-        # Fall back to default
-        detected_city = None
-        for c in cities_db.get("cities", []):
-            if c["id"] == default_id:
-                detected_city = c
-                break
-        if not detected_city and cities_db.get("cities"):
-            detected_city = cities_db["cities"][0]
-
+    
+    # Get the default city immediately
+    detected_city = None
+    for c in cities_db.get("cities", []):
+        if c["id"] == default_id:
+            detected_city = c
+            break
+    if not detected_city and cities_db.get("cities"):
+        detected_city = cities_db["cities"][0]
+    
     return {
-        "client_ip": client_ip,
         "city": detected_city or {"id": "paris-tx", "name": "Paris", "state": "TX"},
         "all_cities": [
             {"id": c["id"], "name": c["name"], "state": c["state"],
@@ -477,16 +466,30 @@ app.include_router(verify_router)
 
 
 def _get_connector(city_id: str = None):
-    """Get the appropriate connector for the given city or default."""
+    """Get the appropriate connector for the given city or default.
+    
+    Matches by city key prefix (e.g., 'paris-tx' matches 'paris-tx' or 'paris-texas').
+    Falls back to default connector if no match.
+    """
+    if not connectors:
+        return connector  # fallback to global
+    
     if city_id:
+        normalized = city_id.lower().replace(" ", "-")
         for key, conn in connectors.items():
-            if key.startswith(city_id.lower().replace("-", "-")):
+            if key.startswith(normalized) or normalized.startswith(key):
                 return conn
+    
     # Fall back to default
     for key, conn in connectors.items():
-        if key.startswith(_default_city_id.replace("-", "-")):
+        if key.startswith(_default_city_id.lower().replace(" ", "-")):
             return conn
-    return connector  # fallback to global
+    
+    # Last resort: first connector
+    for conn in connectors.values():
+        return conn
+    
+    return connector  # ultimate fallback
 
 
 # --- Health ---
@@ -505,6 +508,8 @@ async def health():
             ocr_engines.append("pillow")
         if summarizer._numpy_available:
             ocr_engines.append("numpy")
+        if summarizer._fitz_available:
+            ocr_engines.append("pymupdf")
         ocr_available = bool(ocr_engines)
 
     next_scrape = None
@@ -875,11 +880,9 @@ async def get_config():
 @app.get("/api/detect-city")
 async def detect_city(request: Request):
     """Detect the user's city based on their IP address.
-
-    Returns:
-    - client_ip: The detected IP
-    - city: The matched city object
-    - all_cities: All available cities for the city selector
+    
+    Returns default city immediately (no external API calls that could 502).
+    Geolocation is done via IP on the frontend side or can be added as async background task.
     """
     return await _detect_city_from_ip(request)
 

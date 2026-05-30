@@ -481,6 +481,47 @@ class LLMSummarizer:
             print(f"[TESSERACT] Failed: {e}")
             return ""
 
+    async def _ocr_with_google_vision(self, image_bytes: bytes) -> str:
+        """OCR using Google Cloud Vision API (requires GOOGLE_CLOUD_API_KEY).
+        
+        Most reliable cloud OCR engine. Works perfectly on scanned documents.
+        Falls back silently if GOOGLE_CLOUD_API_KEY is not set.
+        """
+        api_key = os.getenv("GOOGLE_CLOUD_API_KEY")
+        if not api_key:
+            return ""
+        
+        try:
+            import httpx
+            img_b64 = base64.b64encode(image_bytes).decode("utf-8")
+            
+            url = f"https://vision.googleapis.com/v1/images:annotate?key={api_key}"
+            payload = {
+                "requests": [{
+                    "image": {"content": img_b64},
+                    "features": [{"type": "DOCUMENT_TEXT_DETECTION", "maxResults": 1}],
+                }]
+            }
+            
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                resp = await client.post(url, json=payload)
+                if resp.status_code != 200:
+                    return ""
+                
+                data = resp.json()
+                responses = data.get("responses", [])
+                if not responses:
+                    return ""
+                
+                text = responses[0].get("fullTextAnnotation", {}).get("text", "")
+                if text and len(text.strip()) > 20:
+                    print(f"[GOOGLE-VISION] Extracted {len(text.strip())} chars")
+                    return text.strip()
+                return ""
+        except Exception as e:
+            print(f"[GOOGLE-VISION] Failed: {e}")
+            return ""
+
     async def _ocr_with_ocrspace(self, image_bytes):
         """Free OCR.space API — no API key needed, 25k requests/month.
         
