@@ -361,13 +361,21 @@ async def lifespan(app: FastAPI):
     """Manage application lifecycle."""
     global connector, summarizer, scheduler, connectors, city_configs, _default_city_id
 
-    # Initialize database
-    init_db()
-    print(f"[OK] Database initialized ({'PostgreSQL' if os.getenv('DATABASE_URL') else 'SQLite'})")
+    # Initialize database — wrap in try/except so the health endpoint works even if DB fails
+    try:
+        init_db()
+        print(f"[OK] Database initialized ({'PostgreSQL' if os.getenv('DATABASE_URL') else 'SQLite'})")
+    except Exception as e:
+        print(f"[WARN] Database initialization failed: {e}")
+        print("[WARN] Running with limited functionality (DB queries will fail)")
 
     # Load cities and initialize connectors
-    cities_db = _load_cities_db()
-    _default_city_id = cities_db.get("default_city", "paris-tx")
+    try:
+        cities_db = _load_cities_db()
+        _default_city_id = cities_db.get("default_city", "paris-tx")
+    except Exception as e:
+        print(f"[WARN] Failed to load cities database: {e}")
+        cities_db = {"cities": [], "default_city": "paris-tx"}
 
     # Keep the global 'connector' var for backwards compatibility
     connector = None
