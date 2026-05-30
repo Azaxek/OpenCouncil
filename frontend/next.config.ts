@@ -5,21 +5,22 @@ const nextConfig: NextConfig = {
 
   // Rewrite API calls to the backend.
   // Local dev: proxied to localhost:8000
-  // Vercel (monorepo services): proxied to /_/backend via vercel.json experimentalServices
+  // Vercel (monorepo services): handled by api/[[...path]]/route.ts proxy -> /_/backend
   async rewrites() {
-    if (!process.env.NEXT_PUBLIC_API_URL) {
-      return [
-        {
-          source: "/api/:path*",
-          destination: "http://localhost:8000/api/:path*",
-        },
-        {
-          source: "/health",
-          destination: "http://localhost:8000/health",
-        },
-      ];
+    // Skip rewrites on Vercel — the catch-all API route handles the proxy
+    if (process.env.VERCEL || process.env.NEXT_PUBLIC_API_URL) {
+      return [];
     }
-    return [];
+    return [
+      {
+        source: "/api/:path*",
+        destination: "http://localhost:8000/api/:path*",
+      },
+      {
+        source: "/health",
+        destination: "http://localhost:8000/health",
+      },
+    ];
   },
 };
 

@@ -1,8 +1,9 @@
 /**
- * Next.js API Route Handler — proxy /health to the Python backend on HF Spaces.
+ * Next.js API Route Handler — proxy /health to the Python backend.
  *
- * This is a separate route because the catch-all at /api/[[...path]]/route.ts
- * only matches paths under /api/.
+ * Local dev: Proxies to localhost:8000.
+ * Vercel (experimentalServices): Backend is at /_/backend.
+ * Custom: Set NEXT_PUBLIC_API_URL env var to override.
  */
 import { NextRequest, NextResponse } from "next/server";
 
@@ -10,6 +11,11 @@ function getBackendUrl(): string {
   if (process.env.NEXT_PUBLIC_API_URL) {
     return process.env.NEXT_PUBLIC_API_URL.trim();
   }
+  // On Vercel with experimentalServices, backend is at /_/backend
+  if (process.env.VERCEL) {
+    return "/_/backend";
+  }
+  // Local dev
   return "http://localhost:8000";
 }
 
