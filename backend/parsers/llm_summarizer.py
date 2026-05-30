@@ -481,47 +481,63 @@ class LLMSummarizer:
             print(f"[TESSERACT] Failed: {e}")
             return ""
 
-    async def _ocr_with_google_vision(self, image_bytes: bytes) -> str:
-        """OCR using Google Cloud Vision API (requires GOOGLE_CLOUD_API_KEY).
-        
-        Most reliable cloud OCR engine. Works perfectly on scanned documents.
-        Falls back silently if GOOGLE_CLOUD_API_KEY is not set.
+    async def _ocr_with_huggingface(self, image_bytes: bytes) -> str:
+        """OCR using Hugging Face Inference API (free, no credit card needed).
+
+        Uses microsoft/trocr-base-printed model for printed text OCR.
+        Get a free HF token at https://huggingface.co/settings/tokens
+        Set HUGGINGFACE_API_KEY env var — or it falls back to public endpoint.
         """
-        api_key = os.getenv("GOOGLE_CLOUD_API_KEY")
-        if not api_key:
-            return ""
+        import httpx
+        
+        hf_token = os.getenv("HUGGINGFACE_API_KEY")
+        headers = {"Authorization": f"Bearer {hf_token}"} if hf_token else {}
         
         try:
-            import httpx
             img_b64 = base64.b64encode(image_bytes).decode("utf-8")
             
-            url = f"https://vision.googleapis.com/v1/images:annotate?key={api_key}"
-            payload = {
-                "requests": [{
-                    "image": {"content": img_b64},
-                    "features": [{"type": "DOCUMENT_TEXT_DETECTION", "maxResults": 1}],
-                }]
-            }
-            
-            async with httpx.AsyncClient(timeout=30.0) as client:
-                resp = await client.post(url, json=payload)
-                if resp.status_code != 200:
-                    return ""
+            # Try TrOCR printed text model first (best for meeting minutes)
+            async with httpx.AsyncClient(timeout=60.0) as client:
+                resp = await client.post(
+                    "https://api-inference.huggingface.co/models/microsoft/trocr-base-printed",
+                    headers=headers,
+                    content=image_bytes,  # Send raw bytes
+                    timeout=60.0,
+                )
                 
-                data = resp.json()
-                responses = data.get("responses", [])
-                if not responses:
-                    return ""
+                if resp.status_code == 200:
+                    data = resp.json()
+                    if isinstance(data, list) and len(data) > 0:
+                        text = data[0].get("generated_text", "")
+                        if text and len(text.strip()) > 20:
+                            print(f"[HF-TROCR] Extracted {len(text.strip())} chars")
+                            return text.strip()
                 
-                text = responses[0].get("fullTextAnnotation", {}).get("text", "")
-                if text and len(text.strip()) > 20:
-                    print(f"[GOOGLE-VISION] Extracted {len(text.strip())} chars")
-                    return text.strip()
+                # If TrOCR failed or returned nothing, try Nougat (document understanding)
+                if resp.status_code in (503, 429) or not text:
+                    print(f"[HF] TrOCR returned {resp.status_code}, trying Nougat...")
+                    resp = await client.post(
+                        "https://api-inference.huggingface.co/models/facebook/nougat-base",
+                        headers=headers,
+                        content=image_bytes,
+                        timeout=120.0,
+                    )
+                    
+                    if resp.status_code == 200:
+                        data = resp.json()
+                        if isinstance(data, list) and len(data) > 0:
+                            text = data[0].get("generated_text", "")
+                            if text and len(text.strip()) > 20:
+                                print(f"[HF-NOUGAT] Extracted {len(text.strip())} chars")
+                                return text.strip()
+                
                 return ""
-        except Exception as e:
-            print(f"[GOOGLE-VISION] Failed: {e}")
+        except httpx.TimeoutException:
+            print(f"[HF] Request timed out (model may be loading on free tier)")
             return ""
-
+        except Exception as e:
+            print(f"[HF] Failed: {e}")
+            return ""
     async def _ocr_with_ocrspace(self, image_bytes):
         """Free OCR.space API — no API key needed, 25k requests/month.
         
@@ -592,7 +608,7 @@ class LLMSummarizer:
     async def _ocr_all_pages(self, image_bytes_list: list[bytes]) -> list[tuple[int, str]]:
         """Run all OCR engines on all pages and return best results.
         
-        For each page, tries: OCR.space -> EasyOCR -> Tesseract
+        For each page, tries: TrOCR (Hugging Face) -> OCR.space -> EasyOCR -> Tesseract
         Returns list of (page_number, text) tuples.
         """
         results = []
@@ -600,10 +616,16 @@ class LLMSummarizer:
         for i, img_bytes in enumerate(image_bytes_list):
             page_num = i + 1
             page_text = ""
+            text = ""  # For Hugging Face fallback tracking
             
-            # Try OCR.space first (best quality for scanned docs)
-            print(f"[OCR] Page {page_num}: Trying OCR.space...")
-            page_text = await self._ocr_with_ocrspace(img_bytes)
+            # Try Hugging Face TrOCR first (free, best for printed text)
+            print(f"[OCR] Page {page_num}: Trying Hugging Face TrOCR...")
+            page_text = await self._ocr_with_huggingface(img_bytes)
+            
+            # Fallback to OCR.space
+            if not page_text:
+                print(f"[OCR] Page {page_num}: HF failed, trying OCR.space...")
+                page_text = await self._ocr_with_ocrspace(img_bytes)
             
             # Fallback to EasyOCR
             if not page_text and self._easyocr_available:
