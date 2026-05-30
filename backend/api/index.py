@@ -1,15 +1,14 @@
 """
-Vercel serverless entry point for OpenCouncil backend.
+Minimal Vercel serverless entry point for OpenCouncil backend.
 
-Vercel Python serverless functions use WSGI. FastAPI is ASGI, so we use
-Mangum — an ASGI-to-WSGI adapter — to bridge the gap.
-
-Vercel looks for `app` (WSGI callable) in api/index.py.
+Use a raw WSGI handler so FastAPI/Mangum imports happen lazily on first request,
+avoiding cold-start crashes from missing or incompatible dependencies.
 """
 
 import os
 import sys
 from pathlib import Path
+from typing import Any
 
 # Signal to storage.py that we're on Vercel (use /tmp for SQLite)
 os.environ["VERCEL"] = "1"
@@ -22,11 +21,22 @@ if str(_backend_root) not in sys.path:
 # Change working directory to backend root so relative paths work
 os.chdir(str(_backend_root))
 
-# Import the FastAPI app
-from api.server import app as fastapi_app
+# Lazy-loaded WSGI handler
+_handler: Any = None
 
-# Wrap with Mangum for Vercel WSGI compatibility
-from mangum import Mangum
+def _get_handler():
+    """Import FastAPI app and Mangum adapter lazily on first request."""
+    global _handler
+    if _handler is not None:
+        return _handler
 
-# Vercel Python runtime looks for 'app' (WSGI callable)
-app = Mangum(fastapi_app, lifespan="off")
+    from mangum import Mangum
+    from api.server import app as fastapi_app
+    _handler = Mangum(fastapi_app, lifespan="off")
+    return _handler
+
+# Vercel expects `app` to be a WSGI callable — make it a function
+# that lazy-imports on first invocation
+def app(environ: dict, start_response) -> list[bytes]:
+    handler = _get_handler()
+    return handler(environ, start_response)
