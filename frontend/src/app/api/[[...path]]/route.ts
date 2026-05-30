@@ -7,18 +7,16 @@
  */
 import { NextRequest, NextResponse } from "next/server";
 
-function getBackendUrl(): string {
+function getBackendUrl(request: NextRequest): string {
   // Custom backend URL takes priority
   if (process.env.NEXT_PUBLIC_API_URL) {
     return process.env.NEXT_PUBLIC_API_URL.trim();
   }
-  // On Vercel with experimentalServices
+  // On Vercel with experimentalServices, both frontend and backend
+  // are served under the same domain at /_/backend
   if (process.env.VERCEL) {
-    const vercelUrl = process.env.VERCEL_URL || process.env.VERCEL_BRANCH_URL;
-    if (vercelUrl) {
-      const protocol = process.env.VERCEL_ENV === "production" ? "https" : "https";
-      return `${protocol}://${vercelUrl}/_/backend`;
-    }
+    const origin = new URL(request.url).origin;
+    return `${origin}/_/backend`;
   }
   // Local dev
   return "http://localhost:8000";
@@ -27,7 +25,7 @@ function getBackendUrl(): string {
 async function proxy(request: NextRequest, method: string, timeout: number) {
   const url = new URL(request.url);
   const path = url.pathname.replace(/^\/api/, "");
-  const backendUrl = getBackendUrl();
+  const backendUrl = getBackendUrl(request);
   const backendReqUrl = `${backendUrl}/api${path}${url.search}`;
 
   try {
@@ -49,8 +47,25 @@ async function proxy(request: NextRequest, method: string, timeout: number) {
     }
 
     const response = await fetch(backendReqUrl, fetchOptions);
-    const data = await response.json();
-    return NextResponse.json(data, { status: response.status });
+    
+    // Check content type to avoid parsing HTML as JSON
+    const contentType = response.headers.get("content-type") || "";
+    if (contentType.includes("application/json")) {
+      const data = await response.json();
+      return NextResponse.json(data, { status: response.status });
+    }
+    
+    // Not JSON — likely an HTML error page. Read text and return as error
+    const text = await response.text();
+    console.error(`Proxy ${method} ${path} returned non-JSON (${response.status}):`, text.slice(0, 200));
+    return NextResponse.json(
+      {
+        detail: `Backend returned ${response.status} with non-JSON response`,
+        path,
+        backendUrl,
+      },
+      { status: 502 }
+    );
   } catch (error) {
     console.error(`Proxy ${method} ${path} failed:`, error);
     return NextResponse.json(
