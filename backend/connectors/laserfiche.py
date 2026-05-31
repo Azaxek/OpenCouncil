@@ -461,7 +461,7 @@ class LaserficheConnector:
             )
         except Exception as e:
             print(f"[WARN] Error accessing document viewer: {e}")
-            return None
+        return None
 
     async def fetch_page_image_urls(
         self, document_url: str
@@ -470,6 +470,9 @@ class LaserficheConnector:
 
         Returns a list of full URLs to each page image, which can be
         used for OCR text extraction.
+
+        Returns BOTH the page image URLs AND the raw_text with the same URLs,
+        so the caller can use them for OCR processing.
         """
         if not document_url:
             return []

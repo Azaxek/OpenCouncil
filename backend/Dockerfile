@@ -5,13 +5,16 @@ FROM python:3.12-slim
 
 WORKDIR /app
 
-# Install system dependencies (psycopg2 needs libpq, Tesseract OCR needs tesseract-ocr)
+# Install system dependencies (psycopg2 needs libpq, Tesseract OCR needs tesseract-ocr,
+# EasyOCR needs libgl1 for OpenCV)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     gcc \
     libpq-dev \
     tesseract-ocr \
     tesseract-ocr-eng \
     tesseract-ocr-fra \
+    libgl1 \
+    libglib2.0-0 \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy requirements first for layer caching

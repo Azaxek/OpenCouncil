@@ -19,9 +19,23 @@ pg8000>=1.30.0
 # HTTP client for OCR.space free OCR API
 httpx>=0.27.0
 
+# PDF text extraction (used in civicplus.py and fallback PDF processing)
+PyPDF2>=3.0.0
+
 # Encryption for API keys
 cryptography>=42.0.0
 
 # Image processing for social card generation (pure Python wheels available)
 Pillow>=10.0.0
 numpy>=1.24.0
+
+# File type detection for image validation
+python-magic>=0.4.24
+
+# OCR engines for scanned PDF text extraction
+# Tesseract: pytesseract (Python binding) + tesseract-ocr (system) via Dockerfile
+pytesseract>=0.3.10
+# EasyOCR: deep learning OCR, no GPU needed (CPU mode)
+easyocr>=1.7.0
+# PyMuPDF: PDF text extraction + page rendering for OCR
+PyMuPDF>=1.23.0
