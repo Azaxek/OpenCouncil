@@ -30,10 +30,12 @@ interface CityInfo {
   full_name?: string;
 }
 
-// API base URL — always empty string.
-// Local dev: Next.js rewrites in next.config.ts proxy /api/* to localhost:8000
-// Vercel: vercel.json routes /api/* to the Python serverless function
-const API_BASE = "";
+// API base URL — in production points to the HF Space backend.
+// Local dev: Next.js rewrites proxy /api/* to localhost:8000
+// On Vercel: set NEXT_PUBLIC_API_URL env var to the HF Space URL
+const API_BASE = typeof window !== "undefined"
+  ? (window as any).__NEXT_PUBLIC_API_URL || ""
+  : "";
 
 export default function HomePage() {
   const [health, setHealth] = useState<HealthResponse | null>(null);

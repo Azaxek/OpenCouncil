@@ -8,15 +8,14 @@
 import { NextRequest, NextResponse } from "next/server";
 
 function getBackendUrl(request: NextRequest): string {
-  // Custom backend URL takes priority
+  // Custom backend URL takes priority (set on Vercel env vars)
   if (process.env.NEXT_PUBLIC_API_URL) {
     return process.env.NEXT_PUBLIC_API_URL.trim();
   }
-  // On Vercel with experimentalServices, both frontend and backend
-  // are served under the same domain at /_/backend
+  // On Vercel — the Python backend runs on HF Space (Docker needed)
+  // Hardcoded fallback so the frontend works without any env var config
   if (process.env.VERCEL) {
-    const origin = new URL(request.url).origin;
-    return `${origin}/_/backend`;
+    return "https://comfoa-civilly-simplified-backend.hf.space";
   }
   // Local dev
   return "http://localhost:8000";
