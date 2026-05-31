@@ -759,8 +759,18 @@ async def fetch_latest_minutes(force: bool = Query(False, description="Force re-
                     new_count += 1
                     if summarizer:
                         await _auto_summarize_minutes(minutes_obj, force=force)
-                elif force and summarizer:
-                    await _auto_summarize_minutes(existing, force=True)
+                elif existing:
+                    # Existing record — try to fetch page image URLs if missing
+                    doc_url = m.get("document_url")
+                    if doc_url and (not existing.page_image_urls or len(existing.page_image_urls) == 0) and hasattr(conn, 'fetch_page_image_urls'):
+                        print(f"[FETCH] Fetching missing page_image_urls for {mid}...")
+                        page_urls = await conn.fetch_page_image_urls(doc_url)
+                        if page_urls:
+                            existing.page_image_urls = page_urls
+                            save_minutes(existing)
+                            print(f"[FETCH] Added {len(page_urls)} page URLs to {mid}")
+                    if force and summarizer:
+                        await _auto_summarize_minutes(existing, force=True)
             results.append(f"{city_name}: {new_count} new")
             print(f"[FETCH] {city_name}: {new_count} new")
         except Exception as e:
