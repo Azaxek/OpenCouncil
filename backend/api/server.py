@@ -409,14 +409,14 @@ async def lifespan(app: FastAPI):
         scheduler.add_job(
             _scheduled_scrape,
             trigger="interval",
-            hours=6,
+            hours=2,
             id="scrape_minutes",
             name="Fetch & summarize latest minutes",
             replace_existing=True,
             max_instances=1,
         )
         scheduler.start()
-        print("[OK] Background scheduler started — will auto-scrape every 6 hours")
+        print("[OK] Background scheduler started — will auto-scrape every 2 hours")
         asyncio.create_task(_scheduled_scrape())
         print("[OK] Initial scrape queued — minutes will appear shortly")
     else:
@@ -704,31 +704,76 @@ async def reset_minutes():
 
 @app.post("/api/minutes/fetch-latest")
 async def fetch_latest_minutes(force: bool = Query(False, description="Force re-fetch and re-summarize even if cached")):
-    """Fetch and store the latest minutes from all connected cities."""
-    conn = _get_connector()
-    if not conn:
-        raise HTTPException(status_code=503, detail="No connector initialized")
+    """Fetch and store the latest minutes from ALL connected cities.
+    
+    Designed for external cron jobs (e.g. cron-job.org) to trigger scraping
+    at any interval. The background scheduler also runs every 2 hours.
+    """
+    if not connectors:
+        raise HTTPException(status_code=503, detail="No connectors initialized")
 
-    try:
-        if hasattr(conn, 'get_latest_minutes'):
-            minutes = await conn.get_latest_minutes()
-            if not minutes:
-                raise HTTPException(status_code=404, detail="No minutes found")
+    results = []
+    errors = []
+    
+    for city_key, conn in connectors.items():
+        if not hasattr(conn, 'fetch_minutes_list'):
+            continue
 
-            save_minutes(minutes)
-            if summarizer:
-                await _auto_summarize_minutes(minutes, force=force)
+        city_name = city_key.split("-")[0].title()
+        try:
+            minutes_list = await conn.fetch_minutes_list(limit=3)
+            new_count = 0
+            for m in minutes_list:
+                mid = m.get("id")
+                if not mid:
+                    continue
+                existing = get_minutes(mid)
+                if existing and not force:
+                    continue
+                if not existing:
+                    doc_url = m.get("document_url")
+                    raw_text = None
+                    if doc_url and hasattr(conn, 'fetch_document_text'):
+                        raw_text = await conn.fetch_document_text(doc_url)
+                    minutes_obj = Minutes(
+                        id=mid,
+                        city=m.get("city", city_name),
+                        state=m.get("state", "TX"),
+                        meeting_date=m.get("meeting_date") or datetime.now(timezone.utc),
+                        meeting_type=m.get("meeting_type", "City Council Meeting"),
+                        title=m.get("title", "Meeting Minutes"),
+                        url=m.get("url") or "",
+                        document_url=doc_url,
+                        raw_text=raw_text,
+                    )
+                    save_minutes(minutes_obj)
+                    new_count += 1
+                    if summarizer:
+                        await _auto_summarize_minutes(minutes_obj, force=force)
+                elif force and summarizer:
+                    await _auto_summarize_minutes(existing, force=True)
+            results.append(f"{city_name}: {new_count} new")
+            print(f"[FETCH] {city_name}: {new_count} new")
+        except Exception as e:
+            errors.append(f"{city_name}: {str(e)}")
+            print(f"[FETCH] {city_name} failed: {e}")
 
-            return {
-                "minutes": minutes,
-                "summary": get_minutes_summary(minutes.id),
-            }
-        else:
-            raise HTTPException(status_code=400, detail="Connector does not support fetching latest")
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=502, detail=f"Failed to fetch latest minutes: {str(e)}")
+    return {
+        "status": "ok",
+        "results": results,
+        "errors": errors,
+        "cities_scraped": len(results),
+    }
+
+
+@app.post("/api/scrape-all")
+async def scrape_all():
+    """Cron-friendly endpoint: scrape ALL cities and return results.
+    
+    Hit this from cron-job.org (free) every 2 hours to keep minutes fresh.
+    Returns immediately with summary of what was scraped.
+    """
+    return await fetch_latest_minutes(force=False)
 
 
 @app.post("/api/minutes/summarize")
