@@ -438,7 +438,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="OpenCouncil API",
     description="Making local government understandable for everyone.",
-    version="0.2.0",
+    version="0.3.0",
     lifespan=lifespan,
 )
 
@@ -733,8 +733,16 @@ async def fetch_latest_minutes(force: bool = Query(False, description="Force re-
                 if not existing:
                     doc_url = m.get("document_url")
                     raw_text = None
+                    page_image_urls: list[str] = []
                     if doc_url and hasattr(conn, 'fetch_document_text'):
                         raw_text = await conn.fetch_document_text(doc_url)
+                        if raw_text:
+                            for line in raw_text.split("\n"):
+                                match = re.search(r'\[Page \d+: (.+)\]', line)
+                                if match:
+                                    page_image_urls.append(match.group(1))
+                            if not page_image_urls and hasattr(conn, 'fetch_page_image_urls'):
+                                page_image_urls = await conn.fetch_page_image_urls(doc_url)
                     minutes_obj = Minutes(
                         id=mid,
                         city=m.get("city", city_name),
@@ -745,6 +753,7 @@ async def fetch_latest_minutes(force: bool = Query(False, description="Force re-
                         url=m.get("url") or "",
                         document_url=doc_url,
                         raw_text=raw_text,
+                        page_image_urls=page_image_urls,
                     )
                     save_minutes(minutes_obj)
                     new_count += 1
