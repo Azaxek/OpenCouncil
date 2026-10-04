@@ -17,22 +17,19 @@
 ## 3. Deploy to Vercel
 
 1. Import `github.com/Azaxek/OpenCouncil`
-2. Add these environment variables:
+2. Set **Root Directory** to `frontend` (Settings > General). The Next.js app lives there.
+3. Set `NEXT_PUBLIC_API_URL` to your backend's address (the FastAPI backend in `backend/` runs separately, for example as a Hugging Face Space using `backend/Dockerfile`). Leave it unset to use the default Space.
+
+The backend needs these environment variables:
 
 | Variable | Value | Required? |
 |----------|-------|-----------|
-| `GROK_API_KEY` | Your Groq API key (`gsk_...`) | ✅ Required for AI summaries |
-| `DATABASE_URL` | Supabase connection string (`postgresql://...`) | ✅ Required for persistence |
-| `VERCEL` | `1` | ✅ Auto-set by Vercel |
-| `NEXT_PUBLIC_API_URL` | Leave blank | ⬜ Only if using custom backend |
+| `GROK_API_KEY` | Your Groq API key (`gsk_...`) | Required for AI summaries |
+| `DATABASE_URL` | Supabase connection string (`postgresql://...`) | Required for persistence |
 
 ## 4. Deploy
 
-Click **Deploy**. The `vercel.json` config handles everything:
-
-- Frontend (Next.js) → serves at `your-project.vercel.app`
-- Backend (Python) → automatically routed via `/_/backend` prefix
-- API calls from frontend → proxied through Next.js API route
+Click **Deploy**. The frontend serves at `your-project.vercel.app` and proxies `/api/*` to the backend through a Next.js route. The `/samples` pages are static and work even if the backend is down.
 
 ## 5. Verify
 
