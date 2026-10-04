@@ -2,24 +2,14 @@
  * Next.js API Route Handler — proxy /health to the Python backend.
  *
  * Local dev: Proxies to localhost:8000.
- * Vercel (experimentalServices): Backend is at /_/backend.
+ * Vercel: Proxies to the Hugging Face Space backend.
  * Custom: Set NEXT_PUBLIC_API_URL env var to override.
  */
-import { NextRequest, NextResponse } from "next/server";
+import { NextResponse } from "next/server";
+import { getBackendUrl } from "@/lib/backend";
 
-function getBackendUrl(request: NextRequest): string {
-  if (process.env.NEXT_PUBLIC_API_URL) {
-    return process.env.NEXT_PUBLIC_API_URL.trim();
-  }
-  if (process.env.VERCEL) {
-    const origin = new URL(request.url).origin;
-    return `${origin}/_/backend`;
-  }
-  return "http://localhost:8000";
-}
-
-export async function GET(request: NextRequest) {
-  const backendUrl = getBackendUrl(request);
+export async function GET() {
+  const backendUrl = getBackendUrl();
 
   try {
     const response = await fetch(`${backendUrl}/health`, {
