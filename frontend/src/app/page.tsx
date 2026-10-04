@@ -48,14 +48,13 @@ export default function HomePage() {
     Promise.all([
       fetch(`${API_BASE}/health`).then((res) => res.json()).catch(() => null),
       fetch(`${API_BASE}/api/detect-city`).then((res) => res.json()).catch(() => null),
-      fetch(`${API_BASE}/api/minutes?limit=5`).then((res) => res.json()).catch(() => ({ minutes: [] })),
     ])
-      .then(([healthData, cityData, minutesData]) => {
+      .then(([healthData, cityData]) => {
         setHealth(healthData);
         if (cityData) setCityInfo(cityData.city);
-        // Lead with finished summaries. If the live backend has none, show the pre-generated samples.
-        const summarized: MinutesListItem[] = (minutesData.minutes || []).filter((m: MinutesListItem) => m.has_summary);
-        setMinutesList(summarized.length ? summarized : SAMPLES.map((s) => ({ ...s.minutes, has_summary: true })));
+        // Deterministic demo: always lead with the pre-generated samples. Live OCR/summaries
+        // depend on the city's servers and can fail or return placeholders.
+        setMinutesList(SAMPLES.map((s) => ({ ...s.minutes, has_summary: true })));
         setLoading(false);
       })
       .catch(() => setLoading(false));
@@ -65,7 +64,7 @@ export default function HomePage() {
     if (!dateStr) return "";
     try {
       return new Date(dateStr).toLocaleDateString("en-US", {
-        month: "long", day: "numeric", year: "numeric",
+        month: "long", day: "numeric", year: "numeric", timeZone: "America/Chicago",
       });
     } catch { return dateStr; }
   };
