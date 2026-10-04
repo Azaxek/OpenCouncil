@@ -87,7 +87,7 @@ export default function HomePage() {
               <div style={{ display: "flex", flexDirection: "column", gap: "1rem" }}>
                 <div style={{ display: "flex", alignItems: "center", gap: "0.75rem" }}>
                   <span className="news-section-tag">Featured Minutes</span>
-                  {latestMinutes.has_summary && <span className="badge badge-brand">AI Summary Available</span>}
+                  {latestMinutes.has_summary && <span className="badge badge-brand">Summary Available</span>}
                 </div>
                 <h2 className="news-headline-xl">{latestMinutes.title}</h2>
                 <div className="news-byline">
@@ -96,7 +96,7 @@ export default function HomePage() {
                 </div>
                 <p className="news-body" style={{ marginTop: "0.5rem" }}>
                   {latestMinutes.has_summary
-                    ? "An AI-powered plain-language summary is available for these minutes. Read the key decisions, budget items, and public comment opportunities."
+                    ? "A plain-language summary is available for these minutes. Read the key decisions, budget items, and public comment opportunities."
                     : "View the full meeting minutes with AI-powered plain-language summaries."}
                 </p>
                 <div><span className="btn btn-primary">Read Full Coverage →</span></div>
@@ -134,7 +134,7 @@ export default function HomePage() {
                         </p>
                       </div>
                       <div style={{ display: "flex", alignItems: "center", gap: "0.5rem", flexShrink: 0 }}>
-                        {minutes.has_summary && <span className="badge badge-brand">AI</span>}
+                        {minutes.has_summary && <span className="badge badge-brand">Summary</span>}
                         <span style={{ color: "var(--foreground-secondary)", fontSize: "0.875rem" }}>→</span>
                       </div>
                     </div>

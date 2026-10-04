@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
+import { SAMPLES } from "@/lib/samples";
 
 interface MinutesListItem {
   id: string;
@@ -179,6 +180,24 @@ export default function MinutesPage() {
         </div>
       )}
 
+      {/* Pre-generated summaries (static, always available) */}
+      <section className="space-y-3">
+        <span className="news-section-tag">Summarized meetings</span>
+        {SAMPLES.map(({ minutes }) => (
+          <Link key={minutes.id} href={`/minutes/${minutes.id}`} style={{ textDecoration: "none" }}>
+            <article className="article-card" style={{ padding: "1.25rem" }}>
+              <span className="badge badge-green" style={{ fontSize: "0.625rem" }}>Summarized</span>
+              <h3 className="news-headline-md" style={{ fontSize: "1.1rem", marginTop: "0.25rem" }}>{minutes.title}</h3>
+              <p className="news-byline" style={{ marginTop: "0.25rem" }}>
+                {formatDate(minutes.meeting_date)} — {minutes.meeting_type}
+              </p>
+            </article>
+          </Link>
+        ))}
+      </section>
+
+      {minutesList.length > 0 && <span className="news-section-tag">Latest from the city (live, summaries may be unavailable)</span>}
+
       {/* Minutes list */}
       {!loading && minutesList.length > 0 && (
         <div className="space-y-3">
@@ -204,9 +223,6 @@ export default function MinutesPage() {
                     <div style={{ display: "flex", alignItems: "center", gap: "0.5rem", marginBottom: "0.25rem" }}>
                       {index === 0 && (
                         <span className="badge badge-brand" style={{ fontSize: "0.625rem" }}>Latest</span>
-                      )}
-                      {minutes.has_summary && (
-                        <span className="badge badge-green" style={{ fontSize: "0.625rem" }}>Summarized</span>
                       )}
                     </div>
                     <h3 className="news-headline-md" style={{ fontSize: "1.1rem" }}>
