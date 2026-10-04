@@ -14,7 +14,9 @@ app_port: 7860
 
 Council agendas and minutes are long PDFs buried on city websites. OpenCouncil fetches them automatically, uses AI to summarize them, and shows the results in a clean, searchable site, so residents can see what their city is deciding without reading 80 pages.
 
-**Live site:** [open-council-alpha.vercel.app](https://open-council-alpha.vercel.app)
+**Live site:** [open-council-alpha.vercel.app](https://open-council-alpha.vercel.app)  ·  **Always-on demo:** [/samples](https://open-council-alpha.vercel.app/samples)
+
+Live data depends on the city's document server and the summarizer, so the site also includes `/samples`: pre-generated summaries of three real Paris, TX meetings, stored in [`frontend/src/data/sample-minutes.json`](frontend/src/data/sample-minutes.json). They are static, deterministic (no API, database or LLM call) and each links to the official document.
 
 ## What it does
 

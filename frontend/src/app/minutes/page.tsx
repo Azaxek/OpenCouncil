@@ -106,6 +106,11 @@ export default function MinutesPage() {
         </p>
       </div>
 
+      <p className="news-byline" style={{ textTransform: "none", letterSpacing: "normal" }}>
+        Live data depends on the city&apos;s document server and the summarizer. To see finished summaries
+        any time, browse the <Link href="/samples">pre-generated sample summaries</Link>.
+      </p>
+
       <hr className="news-divider" />
 
       {/* Controls */}

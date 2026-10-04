@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { use, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
+import { findSample } from "@/lib/samples";
 
 interface MinutesDetail {
   id: string;
@@ -61,13 +62,16 @@ export default function MinutesDetailPage({
 }) {
   const { id } = use(params);
   const router = useRouter();
-  const [minutes, setMinutes] = useState<MinutesDetail | null>(null);
-  const [summary, setSummary] = useState<SummaryData | null>(null);
-  const [loading, setLoading] = useState(true);
+  // Pre-generated sample ids are served from static data, with no API call.
+  const sample = findSample(id);
+  const [minutes, setMinutes] = useState<MinutesDetail | null>(sample?.minutes ?? null);
+  const [summary, setSummary] = useState<SummaryData | null>(sample?.summary ?? null);
+  const [loading, setLoading] = useState(!sample);
   const [summarizing, setSummarizing] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
+    if (sample) return;
     let cancelled = false;
     fetch(`${API_BASE}/api/minutes/${id}`)
       .then((res) => {
@@ -98,7 +102,7 @@ export default function MinutesDetailPage({
         setLoading(false);
       });
     return () => { cancelled = true; };
-  }, [id, router]);
+  }, [id, router, sample]);
 
   const handleSummarize = async () => {
     setSummarizing(true);
@@ -226,16 +230,16 @@ export default function MinutesDetailPage({
       {/* ================================================================ */}
       <header>
         <Link
-          href="/minutes"
+          href={sample ? "/samples" : "/minutes"}
           className="news-byline"
           style={{ textDecoration: "none", display: "inline-block", marginBottom: "1rem" }}
         >
-          ← Back to minutes
+          ← Back to {sample ? "sample summaries" : "minutes"}
         </Link>
 
         <div style={{ display: "flex", alignItems: "center", gap: "0.75rem", marginBottom: "0.75rem" }}>
           <span className="badge badge-brand">{minutes.meeting_type}</span>
-          {summary && <span className="badge badge-green">AI Summary Available</span>}
+          {summary && <span className="badge badge-green">{sample ? "Pre-generated Summary" : "AI Summary Available"}</span>}
         </div>
 
         <h1 className="news-headline-xl" style={{ marginBottom: "0.75rem" }}>
@@ -269,6 +273,13 @@ export default function MinutesDetailPage({
         </div>
       </header>
 
+      {sample && (
+        <p className="news-byline" style={{ textTransform: "none", letterSpacing: "normal" }}>
+          Pre-generated sample: this summary was written from the official minutes and stored with the
+          site. It is not produced live. Check the original document for the authoritative record.
+        </p>
+      )}
+
       <hr className="news-divider" />
 
       {/* ================================================================ */}
@@ -288,10 +299,10 @@ export default function MinutesDetailPage({
         >
           <div>
             <h2 className="news-headline-lg" style={{ fontSize: "1.35rem" }}>
-              AI-Powered Summary
+              {sample ? "Plain-Language Summary" : "AI-Powered Summary"}
             </h2>
             <p className="news-byline" style={{ textTransform: "none", letterSpacing: "normal", marginTop: "0.25rem" }}>
-              Plain-language explanation powered by Groq AI (Llama 8B)
+              {sample ? "Pre-generated from the official minutes" : "Plain-language explanation powered by Groq AI (Llama 8B)"}
             </p>
           </div>
           {!summary && (

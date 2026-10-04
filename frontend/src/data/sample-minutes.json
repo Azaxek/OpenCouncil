@@ -1,0 +1,260 @@
+[
+  {
+    "minutes": {
+      "id": "sample-2026-09-14",
+      "city": "Paris",
+      "state": "TX",
+      "meeting_date": "2026-09-14T17:30:00-05:00",
+      "meeting_type": "Regular City Council Meeting",
+      "title": "City Council Meeting Minutes - 09-14-2026",
+      "url": "https://documents.paristexas.gov/WebLink/docview.aspx?id=1410238&dbid=0",
+      "document_url": "https://documents.paristexas.gov/WebLink/docview.aspx?id=1410238&dbid=0",
+      "raw_text": null,
+      "summary": "pre-generated",
+      "source": "laserfiche"
+    },
+    "summary": {
+      "big_picture": "A short regular meeting: council approved a gas-rate settlement, filled an open economic development seat, and approved a housing tax break for five duplexes.",
+      "summary": "Council met on September 14, 2026, with Mayor Pro-Tem Gary Savage presiding at first and Mayor Mihir Pankaj joining by video partway through. The consent agenda passed 5-0. Council then approved a tax abatement for five new duplexes on Sycamore Street after asking pointed questions about earlier projects by the same applicant, appointed Gene Anderson to the Paris Economic Development Corporation board, and approved a settlement over Atmos Energy's natural gas rates. After a closed session about business-recruitment projects, council approved spending on \"Project Catalyst.\"",
+      "key_decisions": [
+        {
+          "title": "Tax break for five duplexes on Sycamore Street",
+          "plain_english": "Council approved Resolution 2026-037, giving a residential tax abatement and economic development agreement to an applicant who plans five duplexes in the 600 block of Sycamore Street under the city's \"5 in 5\" housing infill program. Council members noted the applicant already held two earlier 5-in-5 agreements, one on city-owned lots where work had not started, and asked about timing. The applicant's project manager said work would begin with the Sycamore duplexes.",
+          "impact": "Adds new housing in an infill area; the city gives up some future property tax on the new buildings in exchange.",
+          "category": "Your Neighborhood"
+        },
+        {
+          "title": "Natural gas rate settlement with Atmos",
+          "plain_english": "Council approved Ordinance 2026-037, a negotiated settlement over Atmos Energy's rate request. Atmos filed for $291.1 million in additional revenue from its customers. Under the Atmos Cities Steering Committee's rate review mechanism, which Paris belongs to, the request came down to $273.6 million, and negotiations produced a further $13.1 million reduction. Staff recommended approval. It passed 6-0.",
+          "impact": "Council accepted the negotiated rates, which are lower than what the company first requested.",
+          "category": "Your Utilities"
+        },
+        {
+          "title": "New member for the Paris Economic Development Corporation",
+          "plain_english": "Council debated whether to open the vacant seat (formerly held by Marshall Dougherty) to new applicants or take the next person on an existing list. Council chose the list and appointed Gene Anderson, 6-0.",
+          "impact": "Fills a vacancy on the board that works on bringing jobs and businesses to Paris.",
+          "category": "Council Action"
+        },
+        {
+          "title": "Airport hangar leases at Cox Field",
+          "plain_english": "Three assignments of ground leases at Cox Field Airport (Hangars 7, 1 and 8) from LT Wings, LLC to other companies passed on the consent agenda. A fourth item, an amendment and assignment for Hangar 3 to HT Aero, LLC, was taken off the table. The City Attorney said the lender and paperwork issues had been resolved and recommended approval. The minutes do not record a separate vote on that item.",
+          "impact": "Changes who leases airport hangars. The original 40-year LT Wings lease was approved on October 18, 2024.",
+          "category": "City Planning"
+        },
+        {
+          "title": "Closed-session spending on \"Project Catalyst\"",
+          "plain_english": "In executive session, council discussed business prospects (named only by code names). Back in open session, it approved spending on Project Catalyst, 5-0.",
+          "impact": "The amount and company are not given in the minutes. Details usually come out when an agreement is finalized.",
+          "category": "Executive Session"
+        }
+      ],
+      "budget_items": [
+        {
+          "title": "Atmos rate request",
+          "amount": "$291.1 million to $273.6 million",
+          "description": "The original request was reduced through the steering committee's rate review mechanism, then by a further $13.1 million in negotiations."
+        }
+      ],
+      "public_comment_opportunities": [],
+      "items": [],
+      "what_you_can_do": [
+        {
+          "action": "Raise neighborhood concerns during Citizens' Forum, at the start of each regular meeting. Two residents spoke this time, one about city leadership and the cost to homeowners, one asking for an update on a cleanup project at 7th and Garrett.",
+          "who": "Any resident"
+        },
+        {
+          "action": "Read the full minutes, including the consent agenda items summarized only briefly here.",
+          "who": "Anyone interested"
+        },
+        {
+          "action": "Join Salsa on the Square, the downtown event the mayor reminded everyone about for the following Saturday.",
+          "who": "Anyone"
+        }
+      ]
+    }
+  },
+  {
+    "minutes": {
+      "id": "sample-2026-08-24",
+      "city": "Paris",
+      "state": "TX",
+      "meeting_date": "2026-08-24T17:30:00-05:00",
+      "meeting_type": "Regular City Council Meeting",
+      "title": "City Council Meeting Minutes - 08-24-2026",
+      "url": "https://documents.paristexas.gov/WebLink/docview.aspx?id=1410203&dbid=0",
+      "document_url": "https://documents.paristexas.gov/WebLink/docview.aspx?id=1410203&dbid=0",
+      "raw_text": null,
+      "summary": "pre-generated",
+      "source": "laserfiche"
+    },
+    "summary": {
+      "big_picture": "Council adopted the 2026-27 budget and set a property tax rate of $0.572390 per $100, a 24.5% increase in property tax revenue.",
+      "summary": "At its August 24, 2026 meeting, council voted 6-0 on three linked items: the budget for the year starting October 1, a vote ratifying the property tax revenue increase it contains, and the tax rate itself. Council also created a new zoning district for manufactured homes, heard about a new program that will let Paris EMS carry blood, approved another housing tax break, and tabled an airport lease item because the City Attorney had just received new documents.",
+      "key_decisions": [
+        {
+          "title": "2026-27 budget adopted",
+          "plain_english": "Council adopted the budget for October 1, 2026 through September 30, 2027. Adoption had been postponed from the August 10 public hearing. Vote: 6-0.",
+          "impact": "Funds city services for the coming year.",
+          "category": "Your Tax Dollars"
+        },
+        {
+          "title": "Property tax revenue increase ratified",
+          "plain_english": "The Finance Director explained the budget raises property tax revenue by $3,070,357, or 24.5 percent. Council ratified the increase 6-0.",
+          "impact": "This is the revenue increase that drove the budget debate and the earlier workshops.",
+          "category": "Your Tax Dollars"
+        },
+        {
+          "title": "Tax rate set at $0.572390 per $100",
+          "plain_english": "After a required public hearing (one resident spoke against), council set the rate at $0.572390 per $100 of property value: $0.416663 for maintenance and operations plus $0.155727 for debt payments. The rate is expected to raise about $11.0 million for the General Fund and $4.1 million for debt service. Vote: 6-0.",
+          "impact": "The city says the average homestead, valued at $171,256, would pay $980.25 in city property taxes.",
+          "category": "Your Tax Dollars"
+        },
+        {
+          "title": "New manufactured housing zoning district",
+          "plain_english": "Ordinance 2026-036 creates an MH Manufactured Housing District and lets individual HUD-code manufactured homes be placed in the MH district and the SF-3 one-family district. It removes the old ban on individual HUD-code homes while keeping existing rules for manufactured home parks, RVs and trailers. The only speaker at the public hearing talked about parks mowing and lighting at the Lake Crook boat ramp, which was not on the agenda. Approved 6-0.",
+          "impact": "More places in town where manufactured homes are allowed.",
+          "category": "Your Neighborhood"
+        },
+        {
+          "title": "Tax break for two single-family homes",
+          "plain_english": "Resolution 2026-034 approved a residential tax abatement under the 5-in-5 housing infill program for R4U Ventures, LLC, which plans two single-family homes on a city block lot. Staff said the lot is inside the program area. Approved 6-0.",
+          "impact": "New infill housing, with a temporary property tax break for the builder.",
+          "category": "Your Neighborhood"
+        },
+        {
+          "title": "Airport hangar lease item tabled",
+          "plain_english": "Council tabled the proposed amendment to the LT Wings ground lease and the Hangar 3 assignment to HT Aero LLC, 6-0, after the City Attorney said she had just received new documents.",
+          "impact": "No change yet; the item returned on a later agenda.",
+          "category": "City Planning"
+        }
+      ],
+      "budget_items": [
+        {
+          "title": "Property tax revenue increase",
+          "amount": "$3,070,357 (24.5%)",
+          "description": "Increase built into the 2026-27 budget."
+        },
+        {
+          "title": "Tax rate",
+          "amount": "$0.572390 per $100",
+          "description": "$0.416663 maintenance and operations plus $0.155727 interest and sinking (debt)."
+        },
+        {
+          "title": "Expected tax collections",
+          "amount": "$11,017,634 + $4,117,850",
+          "description": "General Fund and Interest & Sinking Fund respectively."
+        },
+        {
+          "title": "Accounting services agreement",
+          "amount": "about $12,000",
+          "description": "Professional services agreement with McClanahan & Holmes, approved on the consent agenda."
+        },
+        {
+          "title": "Average homestead bill",
+          "amount": "$980.25",
+          "description": "City property taxes on a home valued at $171,256."
+        }
+      ],
+      "public_comment_opportunities": [],
+      "items": [],
+      "what_you_can_do": [
+        {
+          "action": "Vote in the Special Election on November 3, 2026. Council approved a contract with the Lamar County Elections Administrator to run it.",
+          "who": "Registered voters in Paris"
+        },
+        {
+          "action": "Check your property's appraised value and your estimated city tax bill against the figures above.",
+          "who": "Property owners"
+        },
+        {
+          "action": "Learn about the new Prehospital Blood Program, which will let Paris EMS paramedics give blood to some patients in the ambulance. It is mostly funded through a statewide program and RAC funding, at minimal cost to the city.",
+          "who": "Anyone interested"
+        }
+      ]
+    }
+  },
+  {
+    "minutes": {
+      "id": "sample-2026-08-11",
+      "city": "Paris",
+      "state": "TX",
+      "meeting_date": "2026-08-11T17:30:00-05:00",
+      "meeting_type": "City Council Workshop",
+      "title": "City Council Workshop Minutes - 08-11-2026",
+      "url": "https://documents.paristexas.gov/WebLink/docview.aspx?id=1410202&dbid=0",
+      "document_url": "https://documents.paristexas.gov/WebLink/docview.aspx?id=1410202&dbid=0",
+      "raw_text": null,
+      "summary": "pre-generated",
+      "source": "laserfiche"
+    },
+    "summary": {
+      "big_picture": "No votes were taken. City leaders explained why the budget needed a property tax increase and what was cut to reduce it from 20 cents to about 10 cents.",
+      "summary": "This special workshop on August 11, 2026 was a financial presentation, not a voting meeting. Mayor Mihir Pankaj said the goal was to lay out the full story of how the city got here. He said the first proposed budget called for a 20-cent increase in the maintenance and operations rate, which many residents said was too heavy. City staff revised the plan to about a 10-cent increase, which the mayor said would still need voter approval. City Manager Rose Beverly described staffing and service gaps, and consultant Shane Howard gave a slide presentation on the cost of putting off work.",
+      "key_decisions": [
+        {
+          "title": "Budget revised from a 20-cent to a 10-cent increase",
+          "plain_english": "After hearing from residents, staff reworked the budget, deferring other needs. The mayor said a lower number meant deferring more, not finding money that was never there. The mayor said that any final increase of that size would go to citizens at the ballot box.",
+          "impact": "Shows the trade-off: a smaller tax increase means more delayed work.",
+          "category": "Your Tax Dollars"
+        },
+        {
+          "title": "Positions cut to balance the budget",
+          "plain_english": "The City Manager said five police positions and one library position were cut so services would match what the city could fund without drawing on reserves.",
+          "impact": "Fewer budgeted positions in public safety and the library.",
+          "category": "Your Safety"
+        },
+        {
+          "title": "Why the city says it needs more revenue",
+          "plain_english": "The City Manager said over 200 miles of city streets are maintained by only six employees, and that low wages make hiring and keeping staff hard. The consultant said a new salary survey found city staff paid 12.6% less than peer cities. He also said the 2016 estimate for a new water treatment plant was $30 million, but after the project was deferred the cost reached $113 million by 2024. He argued the city should grow its tax base with new homes and industry, and that a past \"no new revenue\" rate hurt the city when property values rose.",
+          "impact": "Gives the reasoning behind the rate request; these are the officials' own figures and claims.",
+          "category": "Your Tax Dollars"
+        }
+      ],
+      "budget_items": [
+        {
+          "title": "Original maintenance & operations increase",
+          "amount": "20 cents",
+          "description": "Proposed in earlier workshops; the City Manager said it would not pass."
+        },
+        {
+          "title": "Revised increase",
+          "amount": "about 10 cents",
+          "description": "Includes cuts and deferrals; described by the mayor as requiring voter approval."
+        },
+        {
+          "title": "Positions cut",
+          "amount": "5 police, 1 library",
+          "description": "Reduced to match available funding without using reserves."
+        },
+        {
+          "title": "Water treatment plant cost",
+          "amount": "$30 million (2016) vs $113 million (2024)",
+          "description": "Used by the consultant as an example of deferring costs."
+        },
+        {
+          "title": "Staff pay gap",
+          "amount": "12.6% below peers",
+          "description": "From the new salary survey cited by the consultant."
+        }
+      ],
+      "public_comment_opportunities": [
+        {
+          "item": "District meetings with the City Manager",
+          "deadline": "Not specified in the minutes",
+          "how": "The City Manager planned to hold meetings across the city's districts, and the consultant encouraged residents to attend and talk with her. Check the city website for dates."
+        }
+      ],
+      "items": [],
+      "what_you_can_do": [
+        {
+          "action": "Attend a district meeting with the City Manager to ask questions about the budget.",
+          "who": "Any resident"
+        },
+        {
+          "action": "Read the follow-up: the August 24 meeting, where the budget and tax rate were adopted.",
+          "who": "Anyone interested"
+        }
+      ]
+    }
+  }
+]
