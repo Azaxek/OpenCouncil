@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { useEffect, useState } from "react";
+import { SAMPLES } from "@/lib/samples";
 
 interface HealthResponse {
   status: string;
@@ -52,7 +53,9 @@ export default function HomePage() {
       .then(([healthData, cityData, minutesData]) => {
         setHealth(healthData);
         if (cityData) setCityInfo(cityData.city);
-        setMinutesList(minutesData.minutes || []);
+        // Lead with finished summaries. If the live backend has none, show the pre-generated samples.
+        const summarized: MinutesListItem[] = (minutesData.minutes || []).filter((m: MinutesListItem) => m.has_summary);
+        setMinutesList(summarized.length ? summarized : SAMPLES.map((s) => ({ ...s.minutes, has_summary: true })));
         setLoading(false);
       })
       .catch(() => setLoading(false));
